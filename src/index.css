@@ -1,0 +1,93 @@
+:root {
+  --bg: #f7efe2;
+  --surface: #fffaf0;
+  --text: #5e503f;
+  --text-h: #21160f;
+  --text-muted: #7f6c56;
+  --border: rgba(102, 71, 43, 0.14);
+  --border-strong: rgba(102, 71, 43, 0.24);
+  --accent: #b6572f;
+  --signal: #ed9d38;
+  --ink: #2f241c;
+  --shadow:
+    0 20px 60px rgba(70, 53, 34, 0.14), 0 8px 24px rgba(70, 53, 34, 0.08);
+
+  --sans: 'Instrument Sans', 'Avenir Next', 'Segoe UI', sans-serif;
+  --heading: 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', serif;
+  --mono: 'SFMono-Regular', 'JetBrains Mono', ui-monospace, monospace;
+
+  font: 18px/1.6 var(--sans);
+  letter-spacing: 0.01em;
+  color: var(--text);
+  background: var(--bg);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at top left, rgba(237, 157, 56, 0.22), transparent 30%),
+    radial-gradient(circle at top right, rgba(182, 87, 47, 0.14), transparent 28%),
+    linear-gradient(180deg, #f9f1e6, #f4eadc 44%, #f7efe2);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+a,
+button,
+input,
+textarea,
+select {
+  font: inherit;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+h1,
+h2,
+h3 {
+  font-family: var(--heading);
+  font-weight: 600;
+  line-height: 1.08;
+  color: var(--text-h);
+}
+
+h1 {
+  font-size: clamp(2.8rem, 6vw, 5rem);
+  letter-spacing: -0.05em;
+  margin: 0;
+}
+
+h2 {
+  font-size: clamp(2rem, 3vw, 2.8rem);
+  letter-spacing: -0.04em;
+  margin: 0;
+}
+
+h3 {
+  margin: 0;
+  font-size: 1.18rem;
+}
+
+p {
+  margin: 0;
+}
+
+a {
+  color: inherit;
+}
+
+@media (max-width: 720px) {
+  :root {
+    font-size: 16px;
+  }
+}
