@@ -88,6 +88,11 @@ describe('mindmap api handler', () => {
       previewBeforeExecute: true,
       supportsCompoundCommands: true,
       supportsPlanApply: true,
+      planApplyAtomic: true,
+    })
+    expect(described.body.replayContract).toMatchObject({
+      mode: 'best_effort_current_state',
+      reappliesStoredSelection: true,
     })
     expect(described.body.sessionSummaryFields).toContain('commandRunCount')
     expect(described.body.commandRunFields).toContain('status')
@@ -477,6 +482,51 @@ describe('mindmap api handler', () => {
       plan: expect.objectContaining({
         input: 'Rename this node to Priority goals',
       }),
+    })
+  })
+
+  it('returns a clean protocol error for invalid externally supplied plans', async () => {
+    const handler = createMindmapApiHandler({ rootDir })
+    const created = await handler({
+      method: 'POST',
+      url: '/api/mindmap/session',
+    })
+    const sessionId = (created.body as SessionBody).session.id
+
+    const applied = await handler({
+      method: 'POST',
+      url: `/api/mindmap/session/${sessionId}/command/apply`,
+      body: {
+        plan: {
+          input: 'Do something invalid',
+          summary: 'Invalid test plan.',
+          target: {
+            sessionId,
+            nodeId: 'n_root',
+            nodeTitle: 'Untitled map',
+          },
+          toolCalls: [
+            {
+              id: 'call_bogus_1',
+              toolName: 'bogus',
+              arguments: {},
+            },
+          ],
+        },
+      },
+    })
+
+    expect(applied.status).toBe(400)
+    expect(applied.body.error).toContain('Unsupported command tool "bogus"')
+
+    const shown = await handler({
+      method: 'GET',
+      url: `/api/mindmap/session/${sessionId}`,
+    })
+    const shownBody = shown.body as SessionBody
+    expect(shownBody.session.commandRuns.at(-1)).toMatchObject({
+      status: 'failed',
+      error: 'Unsupported command tool "bogus".',
     })
   })
 })

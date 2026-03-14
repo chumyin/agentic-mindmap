@@ -84,6 +84,11 @@ describe('mindmap cli', () => {
       planningContract: {
         supportsCompoundCommands: boolean
         supportsPlanApply: boolean
+        planApplyAtomic: boolean
+      }
+      replayContract: {
+        mode: string
+        reappliesStoredSelection: boolean
       }
       sessionSummaryFields: string[]
       commandRunFields: string[]
@@ -98,6 +103,11 @@ describe('mindmap cli', () => {
     expect(payload.supportedCommandTools).toContain('rename_node')
     expect(payload.planningContract.supportsCompoundCommands).toBe(true)
     expect(payload.planningContract.supportsPlanApply).toBe(true)
+    expect(payload.planningContract.planApplyAtomic).toBe(true)
+    expect(payload.replayContract).toMatchObject({
+      mode: 'best_effort_current_state',
+      reappliesStoredSelection: true,
+    })
     expect(payload.sessionSummaryFields).toContain('commandRunCount')
     expect(payload.commandRunFields).toContain('status')
     expect(payload.commandRunFields).toContain('replayOfCommandRunId')

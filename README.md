@@ -161,6 +161,12 @@ This gives the prototype two execution modes:
 - natural language -> plan -> execute
 - reviewed plan -> exact apply
 
+External agents can discover the execution contract through `describe`, including:
+
+- exact plan apply is atomic
+- replay mode is `best_effort_current_state`
+- replay re-applies the stored selection before execution
+
 List recent command runs for a session:
 
 ```bash
@@ -181,6 +187,10 @@ npm run cli -- command replay --session <session-id> --run <command-run-id>
 
 Replay appends a new `commandRuns` entry with `replayOfCommandRunId`, so agents can
 trace which execution came from a previous run.
+
+Replay is intentionally not a historical snapshot re-simulation. It reuses the stored
+plan against the current session graph, so results can differ if the graph changed
+after the original run.
 
 Apply a manual graph edit:
 
@@ -214,12 +224,20 @@ Point the browser workspace at the standalone daemon:
 http://127.0.0.1:5173/?mindmapApi=http://127.0.0.1:3210
 ```
 
-The browser will persist that override locally and fall back to same-origin only when a stored external endpoint becomes unreachable.
+The browser will persist that override locally and fall back to same-origin when a
+stored external endpoint becomes unreachable or responds like an incompatible daemon
+such as `404` or `5xx`.
 
 The browser prompt panel now supports two mixed-control loops:
 
 - preview a command plan and apply that exact plan
 - replay one of the recent command runs without leaving the shared session workflow
+
+Exact plan apply is now guarded and atomic:
+
+- `plan.target.sessionId` must match the session being mutated
+- the selection used for planning is re-applied before execution
+- a failing multi-step plan records a failed `commandRun` without partially mutating the graph
 
 ## Verification
 

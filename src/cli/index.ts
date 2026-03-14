@@ -8,7 +8,9 @@ import {
   createMindmapHttpServer,
   type MindmapHttpServerInfo,
 } from '../runtime/http-server'
-import { createMindmapProtocolDescription } from '../runtime/protocol'
+import {
+  createMindmapProtocolDescription,
+} from '../runtime/protocol'
 import type {
   MindmapCommandMode,
   MindmapCommandPlan,
@@ -108,22 +110,6 @@ function ensureCommandMode(value: unknown): MindmapCommandMode {
   }
 
   throw new Error('Expected "mode" to be either plan or execute.')
-}
-
-function ensureCommandPlan(value: unknown): MindmapCommandPlan {
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    Array.isArray(value) ||
-    typeof (value as { input?: unknown }).input !== 'string' ||
-    typeof (value as { summary?: unknown }).summary !== 'string' ||
-    typeof (value as { target?: unknown }).target !== 'object' ||
-    !Array.isArray((value as { toolCalls?: unknown }).toolCalls)
-  ) {
-    throw new Error('Expected "plan" to match the command plan shape.')
-  }
-
-  return value as MindmapCommandPlan
 }
 
 function parseSelection(value: unknown): MindmapSelection | undefined {
@@ -272,7 +258,7 @@ async function runCommand(
     if (subcommand === 'apply') {
       return runtime.applyCommandPlan({
         sessionId,
-        plan: ensureCommandPlan(payload.plan),
+        plan: payload.plan as MindmapCommandPlan,
         actorId: typeof payload.actorId === 'string' ? payload.actorId : undefined,
         selection: parseSelection(payload.selection),
       })

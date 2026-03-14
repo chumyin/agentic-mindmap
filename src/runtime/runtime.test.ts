@@ -267,6 +267,10 @@ describe('mindmap runtime', () => {
 
     expect(applied.session.graph.nodes[targetNodeId]?.title).toBe('Priority goals')
     expect(applied.session.graph.nodes[otherNodeId]?.title).toBe('Audience')
+    expect(applied.session.graph.selection).toEqual({
+      focusedNodeId: targetNodeId,
+      selectedNodeIds: [targetNodeId],
+    })
     expect(applied.session.commandRuns.at(-1)).toMatchObject({
       status: 'executed',
       completedToolCalls: 1,
@@ -276,6 +280,143 @@ describe('mindmap runtime', () => {
         selectedNodeIds: [targetNodeId],
       },
       plan,
+    })
+  })
+
+  it('rejects applying a plan to a different session', async () => {
+    const runtime = createMindmapRuntime({ rootDir })
+    const sourceSession = await runtime.createSession()
+    const targetSession = await runtime.createSession()
+
+    await runtime.generateMap({
+      sessionId: sourceSession.id,
+      prompt: 'Launch strategy for a new B2B analytics product',
+      actorId: 'test-agent',
+    })
+    const targetGenerated = await runtime.generateMap({
+      sessionId: targetSession.id,
+      prompt: 'Hiring plan for a new product team',
+      actorId: 'test-agent',
+    })
+
+    const plan = await runtime.planCommand({
+      sessionId: sourceSession.id,
+      input: 'Rename this node to Priority goals',
+      selection: {
+        focusedNodeId: 'n_root_goals_1',
+        selectedNodeIds: ['n_root_goals_1'],
+      },
+    })
+
+    await expect(
+      runtime.applyCommandPlan({
+        sessionId: targetSession.id,
+        plan,
+        actorId: 'plan-agent',
+      }),
+    ).rejects.toThrow(
+      `Command plan targets session "${sourceSession.id}" but was applied to session "${targetSession.id}".`,
+    )
+
+    const reloadedTarget = await runtime.loadSession(targetSession.id)
+    expect(reloadedTarget.graph).toEqual(targetGenerated.graph)
+    expect(reloadedTarget.commandRuns.at(-1)).toMatchObject({
+      status: 'failed',
+      actorId: 'plan-agent',
+      error: expect.stringMatching(/targets session/i),
+    })
+  })
+
+  it('keeps compound command application atomic when a later step fails', async () => {
+    const runtime = createMindmapRuntime({ rootDir })
+    const session = await runtime.createSession()
+    const generated = await runtime.generateMap({
+      sessionId: session.id,
+      prompt: 'Launch strategy for a new B2B analytics product',
+      actorId: 'test-agent',
+    })
+    const targetNodeId = generated.graph.nodes[generated.graph.rootNodeId].children[0]
+
+    await expect(
+      runtime.applyCommandPlan({
+        sessionId: generated.id,
+        actorId: 'plan-agent',
+        plan: {
+          input: 'Delete this node and add child node called Success metrics',
+          summary: 'Delete the focused node, then add a child under it.',
+          target: {
+            sessionId: generated.id,
+            nodeId: targetNodeId,
+            nodeTitle: 'Goals',
+          },
+          toolCalls: [
+            {
+              id: 'call_delete_node_1',
+              toolName: 'delete_node',
+              arguments: {
+                nodeId: targetNodeId,
+              },
+            },
+            {
+              id: 'call_add_child_node_2',
+              toolName: 'add_child_node',
+              arguments: {
+                parentId: targetNodeId,
+                title: 'Success metrics',
+                kind: 'note',
+              },
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow()
+
+    const reloaded = await runtime.loadSession(generated.id)
+    expect(reloaded.graph.nodes[targetNodeId]?.title).toBe('Goals')
+    expect(
+      Object.values(reloaded.graph.nodes).some(
+        (node) =>
+          node.parentId === targetNodeId && node.title === 'Success metrics',
+      ),
+    ).toBe(false)
+    expect(reloaded.commandRuns.at(-1)).toMatchObject({
+      status: 'failed',
+      completedToolCalls: 1,
+    })
+  })
+
+  it('rejects invalid external plans without crashing and records the failure', async () => {
+    const runtime = createMindmapRuntime({ rootDir })
+    const session = await runtime.createSession()
+
+    await expect(
+      runtime.applyCommandPlan({
+        sessionId: session.id,
+        actorId: 'plan-agent',
+        plan: {
+          input: 'Do something invalid',
+          summary: 'Invalid test plan.',
+          target: {
+            sessionId: session.id,
+            nodeId: 'n_root',
+            nodeTitle: 'Untitled map',
+          },
+          toolCalls: [
+            {
+              id: 'call_bogus_1',
+              toolName: 'bogus' as 'rename_node',
+              arguments: {},
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow('Unsupported command tool "bogus".')
+
+    const reloaded = await runtime.loadSession(session.id)
+    expect(reloaded.commandRuns.at(-1)).toMatchObject({
+      status: 'failed',
+      completedToolCalls: 0,
+      error: 'Unsupported command tool "bogus".',
     })
   })
 
@@ -397,6 +538,10 @@ describe('mindmap runtime', () => {
       completedToolCalls: 2,
       actorId: 'replay-agent',
       replayOfCommandRunId: commandRunId,
+    })
+    expect(replayed.session.graph.selection).toEqual({
+      focusedNodeId: targetNodeId,
+      selectedNodeIds: [targetNodeId],
     })
     expect(
       Object.values(replayed.session.graph.nodes).filter(

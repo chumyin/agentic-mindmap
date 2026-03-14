@@ -80,23 +80,6 @@ function ensureCommandMode(value: unknown): MindmapCommandMode {
   throw new Error('Expected "mode" to be either plan or execute.')
 }
 
-function ensureCommandPlan(value: unknown): MindmapCommandPlan {
-  if (!isRecord(value)) {
-    throw new Error('Expected "plan" to be an object.')
-  }
-
-  if (
-    typeof value.input !== 'string' ||
-    typeof value.summary !== 'string' ||
-    !isRecord(value.target) ||
-    !Array.isArray(value.toolCalls)
-  ) {
-    throw new Error('Expected "plan" to match the command plan shape.')
-  }
-
-  return value as unknown as MindmapCommandPlan
-}
-
 function parseSelection(value: unknown): MindmapSelection | undefined {
   if (!isRecord(value)) {
     return undefined
@@ -239,7 +222,7 @@ export function createMindmapApiHandler(options: SessionStoreOptions = {}) {
       ) {
         const result = await runtime.applyCommandPlan({
           sessionId,
-          plan: ensureCommandPlan(payload.plan),
+          plan: payload.plan as MindmapCommandPlan,
           actorId:
             typeof payload.actorId === 'string' ? payload.actorId : 'api-client',
           selection: parseSelection(payload.selection),
