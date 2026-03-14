@@ -131,6 +131,7 @@ Two external repositories are useful references:
 
 1. `vercel-labs/json-render`
 2. `vercel-labs/visual-json`
+3. `Michaelliv/pi-generative-ui`
 
 ### What to borrow from `json-render`
 
@@ -171,6 +172,20 @@ This prototype should not import the complexity of those projects:
 - no generic visual editor abstraction beyond what the mindmap workflow needs
 
 The reference value is architectural, not cosmetic.
+
+### What to borrow from `pi-generative-ui`
+
+`pi-generative-ui` is useful because it treats generative UI as a controlled
+pipeline, not a free-form rendering trick:
+
+- load capability-specific guidance
+- let the model emit structured tool results
+- preview the intermediate plan
+- only then render or apply the result
+
+The direct lesson for this repo is that natural language should not mutate the
+mindmap immediately. It should first become an explicit plan or tool-call trace
+that can be inspected, tested, and later backed by a real provider.
 
 ## Graph document model
 

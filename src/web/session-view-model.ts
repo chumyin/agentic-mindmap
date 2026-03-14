@@ -1,108 +1,93 @@
-import { useEffect, useMemo, useState } from 'react'
-import {
-  applyGraphEdits,
-  attachArtifact,
-  createChildNode,
-  createGraph,
-  deleteNode,
-  setSelection,
-  updateNode,
-} from '../core/graph'
+import { useEffect, useState } from 'react'
+import { setSelection } from '../core/graph'
+import { createGraph } from '../core/graph'
 import type {
-  GraphEdit,
   MindmapArtifact,
   MindmapGraph,
   MindmapNode,
   MindmapSelection,
-  OperationRecord,
 } from '../core/graph-types'
-import { createMockProvider } from '../runtime/mock-provider'
-import type { MindmapSession } from '../runtime/session-types'
+import type { MindmapCommandPlan, MindmapSession } from '../runtime/session-types'
+import {
+  applyRemoteCommandPlan,
+  applyRemoteEdits,
+  createRemoteSession,
+  generateRemoteMap,
+  loadRemoteSession,
+  planRemoteCommand,
+  replayRemoteCommandRun,
+  runRemoteCommand,
+  runRemoteIntent,
+} from './session-client'
+import { syncMindmapApiBaseOverride } from './api-config'
 
-const STORAGE_KEY = 'agentic-mindmap/browser-session'
+const STORAGE_KEY = 'agentic-mindmap/browser-session-id'
+const LEGACY_STORAGE_KEY = 'agentic-mindmap/browser-session'
 
-function makeId(prefix: string): string {
-  if (typeof globalThis.crypto?.randomUUID === 'function') {
-    return `${prefix}_${globalThis.crypto.randomUUID()}`
-  }
-
-  return `${prefix}_${Math.random().toString(16).slice(2)}`
-}
-
-function nowIso(): string {
-  return new Date().toISOString()
-}
-
-function createOperationRecord(input: {
-  type: string
-  actorType: 'user' | 'agent' | 'system'
-  actorId: string
-  summary: string
-  patches: GraphEdit[]
-}): OperationRecord {
-  return {
-    id: makeId('op'),
-    type: input.type,
-    actor: {
-      type: input.actorType,
-      id: input.actorId,
-    },
-    summary: input.summary,
-    createdAt: nowIso(),
-    patches: input.patches,
-  }
-}
-
-function appendHistory(
-  session: MindmapSession,
-  entry: OperationRecord,
-): MindmapSession {
-  return {
-    ...session,
-    updatedAt: nowIso(),
-    history: [...session.history, entry],
-  }
-}
-
-function createBrowserSession(): MindmapSession {
-  const createdAt = nowIso()
+function makePlaceholderSession(): MindmapSession {
+  const createdAt = new Date().toISOString()
 
   return {
-    id: makeId('web'),
+    id: 'connecting',
     createdAt,
     updatedAt: createdAt,
     graph: createGraph('Untitled map'),
     history: [],
+    commandRuns: [],
     provider: {
       mode: 'mock',
     },
   }
 }
 
-function loadStoredSession(): MindmapSession {
+function readStoredSessionId(): string | null {
   if (typeof window === 'undefined') {
-    return createBrowserSession()
+    return null
   }
 
-  const raw = window.localStorage.getItem(STORAGE_KEY)
+  const storedId = window.localStorage.getItem(STORAGE_KEY)
+  if (storedId?.startsWith('sess_')) {
+    return storedId
+  }
 
-  if (!raw) {
-    return createBrowserSession()
+  const legacyValue = window.localStorage.getItem(LEGACY_STORAGE_KEY)
+  if (!legacyValue) {
+    return null
+  }
+
+  if (legacyValue.startsWith('sess_')) {
+    return legacyValue
   }
 
   try {
-    return JSON.parse(raw) as MindmapSession
+    const parsed = JSON.parse(legacyValue) as { id?: string }
+    return parsed.id?.startsWith('sess_') ? parsed.id : null
   } catch {
-    return createBrowserSession()
+    return null
   }
 }
 
-function storeSession(session: MindmapSession) {
+function storeSessionId(sessionId: string) {
   if (typeof window === 'undefined') {
     return
   }
 
-  window.localStorage.setItem(STORAGE_KEY, JSON.stringify(session))
+  window.localStorage.setItem(STORAGE_KEY, sessionId)
+  window.localStorage.removeItem(LEGACY_STORAGE_KEY)
+}
+
+function nextSelection(nodeId: string): MindmapSelection {
+  return {
+    focusedNodeId: nodeId,
+    selectedNodeIds: [nodeId],
+  }
+}
+
+function withSelection(session: MindmapSession, nodeId: string): MindmapSession {
+  return {
+    ...session,
+    graph: setSelection(session.graph, nextSelection(nodeId)),
+  }
 }
 
 function getSelectedNode(graph: MindmapGraph): MindmapNode | null {
@@ -127,224 +112,356 @@ function countNewNodesUnderParent(graph: MindmapGraph, parentId: string): number
   }).length
 }
 
-function nextSelection(nodeId: string): MindmapSelection {
-  return {
-    focusedNodeId: nodeId,
-    selectedNodeIds: [nodeId],
-  }
-}
-
 export function useSessionViewModel() {
-  const provider = useMemo(() => createMockProvider(), [])
-  const [session, setSession] = useState<MindmapSession>(() => loadStoredSession())
+  const [session, setSession] = useState<MindmapSession | null>(null)
+  const [commandPlan, setCommandPlan] = useState<MindmapCommandPlan | null>(null)
+  const [plannedSelection, setPlannedSelection] = useState<MindmapSelection | null>(
+    null,
+  )
+  const [commandError, setCommandError] = useState<string | null>(null)
+  const [commandPhase, setCommandPhase] = useState<'idle' | 'planning' | 'executing'>(
+    'idle',
+  )
 
   useEffect(() => {
-    storeSession(session)
-  }, [session])
+    let cancelled = false
 
-  const selectedNode = getSelectedNode(session.graph)
-  const latestArtifact = findLatestArtifact(session.graph)
+    async function bootstrapSession() {
+      syncMindmapApiBaseOverride()
+      const storedId = readStoredSessionId()
+
+      try {
+        const loadedSession = storedId
+          ? await loadRemoteSession(storedId)
+          : await createRemoteSession()
+
+        storeSessionId(loadedSession.id)
+
+        if (!cancelled) {
+          setSession(loadedSession)
+        }
+      } catch {
+        const freshSession = await createRemoteSession()
+        storeSessionId(freshSession.id)
+
+        if (!cancelled) {
+          setSession(freshSession)
+        }
+      }
+    }
+
+    void bootstrapSession()
+
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const currentSession = session ?? makePlaceholderSession()
+  const selectedNode = getSelectedNode(currentSession.graph)
+  const latestArtifact = findLatestArtifact(currentSession.graph)
 
   async function generateFromPrompt(prompt: string) {
     const trimmedPrompt = prompt.trim()
 
-    if (!trimmedPrompt) {
+    if (!session || !trimmedPrompt) {
       return
     }
 
-    const baseGraph = createGraph(trimmedPrompt)
-    const generation = await provider.generateInitialMap({
+    const nextSession = await generateRemoteMap({
+      sessionId: session.id,
       prompt: trimmedPrompt,
-      rootNodeId: baseGraph.rootNodeId,
+      actorId: 'browser-user',
     })
-    const graph = setSelection(
-      applyGraphEdits(baseGraph, generation.edits),
-      nextSelection(baseGraph.rootNodeId),
-    )
-    const nextSession = appendHistory(
-      {
-        ...session,
-        graph,
-      },
-      createOperationRecord({
-        type: 'generate_map',
-        actorType: 'agent',
-        actorId: 'browser-user',
-        summary: generation.summary,
-        patches: generation.edits,
-      }),
-    )
 
+    setCommandPlan(null)
+    setPlannedSelection(null)
+    setCommandError(null)
+    setCommandPhase('idle')
     setSession(nextSession)
   }
 
   function selectNode(nodeId: string) {
-    const graph = setSelection(session.graph, nextSelection(nodeId))
-    setSession({
-      ...session,
-      updatedAt: nowIso(),
-      graph,
-    })
+    setSession((current) => (current ? withSelection(current, nodeId) : current))
   }
 
-  function renameSelectedNode(title: string) {
-    if (!selectedNode) {
+  async function renameSelectedNode(title: string) {
+    if (!session || !selectedNode) {
       return
     }
 
-    const graph = updateNode(session.graph, selectedNode.id, { title })
-    const nextSession = appendHistory(
-      {
-        ...session,
-        graph,
-      },
-      createOperationRecord({
-        type: 'manual_edit',
-        actorType: 'user',
-        actorId: 'browser-user',
-        summary: `Renamed node to "${title}".`,
-        patches: [
-          {
-            type: 'update_node',
-            nodeId: selectedNode.id,
-            patch: { title },
-          },
-        ],
-      }),
-    )
+    const nextSession = await applyRemoteEdits({
+      sessionId: session.id,
+      edits: [
+        {
+          type: 'update_node',
+          nodeId: selectedNode.id,
+          patch: { title },
+        },
+      ],
+      actorId: 'browser-user',
+      summary: `Renamed node to "${title}".`,
+    })
 
-    setSession(nextSession)
+    setCommandPlan(null)
+    setPlannedSelection(null)
+    setCommandError(null)
+    setCommandPhase('idle')
+    setSession(withSelection(nextSession, selectedNode.id))
   }
 
-  function addChildNode() {
-    if (!selectedNode) {
+  async function addChildNode() {
+    if (!session || !selectedNode) {
       return
     }
 
     const nextIndex = countNewNodesUnderParent(session.graph, selectedNode.id) + 1
     const title = `New node ${nextIndex}`
     const node = {
-      id: makeId('n'),
+      id:
+        typeof globalThis.crypto?.randomUUID === 'function'
+          ? `n_${globalThis.crypto.randomUUID()}`
+          : `n_${Math.random().toString(16).slice(2)}`,
       parentId: selectedNode.id,
       kind: 'note' as const,
       title,
     }
-    const graph = createChildNode(session.graph, node)
-    const nextSession = appendHistory(
-      {
-        ...session,
-        graph,
-      },
-      createOperationRecord({
-        type: 'manual_edit',
-        actorType: 'user',
-        actorId: 'browser-user',
-        summary: `Added child node "${title}".`,
-        patches: [
-          {
-            type: 'create_node',
-            node,
-          },
-        ],
-      }),
-    )
+    const nextSession = await applyRemoteEdits({
+      sessionId: session.id,
+      edits: [
+        {
+          type: 'create_node',
+          node,
+        },
+      ],
+      actorId: 'browser-user',
+      summary: `Added child node "${title}".`,
+    })
 
-    setSession(nextSession)
+    setCommandPlan(null)
+    setPlannedSelection(null)
+    setCommandError(null)
+    setCommandPhase('idle')
+    setSession(withSelection(nextSession, selectedNode.id))
   }
 
-  function deleteSelectedNode() {
-    if (!selectedNode || selectedNode.parentId === null) {
+  async function deleteSelectedNode() {
+    if (!session || !selectedNode || selectedNode.parentId === null) {
       return
     }
 
-    const graph = deleteNode(session.graph, selectedNode.id)
-    const nextSession = appendHistory(
-      {
-        ...session,
-        graph,
-      },
-      createOperationRecord({
-        type: 'manual_edit',
-        actorType: 'user',
-        actorId: 'browser-user',
-        summary: `Deleted node "${selectedNode.title}".`,
-        patches: [
-          {
-            type: 'delete_node',
-            nodeId: selectedNode.id,
-          },
-        ],
-      }),
-    )
+    const nextSession = await applyRemoteEdits({
+      sessionId: session.id,
+      edits: [
+        {
+          type: 'delete_node',
+          nodeId: selectedNode.id,
+        },
+      ],
+      actorId: 'browser-user',
+      summary: `Deleted node "${selectedNode.title}".`,
+    })
 
-    setSession(nextSession)
+    setCommandPlan(null)
+    setPlannedSelection(null)
+    setCommandError(null)
+    setCommandPhase('idle')
+    setSession(withSelection(nextSession, selectedNode.parentId))
   }
 
   async function expandSelectedBranch(instruction: string) {
-    if (!selectedNode) {
+    if (!session || !selectedNode) {
       return
     }
 
-    const result = await provider.expandBranch({
-      graph: session.graph,
+    const nextSession = await runRemoteIntent({
+      sessionId: session.id,
+      intent: 'expand_branch',
       targetNodeId: selectedNode.id,
       instruction,
+      actorId: 'browser-user',
     })
-    const graph = applyGraphEdits(session.graph, result.edits)
-    const nextSession = appendHistory(
-      {
-        ...session,
-        graph,
-      },
-      createOperationRecord({
-        type: 'expand_branch',
-        actorType: 'agent',
-        actorId: 'browser-user',
-        summary: result.summary,
-        patches: result.edits,
-      }),
-    )
 
-    setSession(nextSession)
+    setCommandPlan(null)
+    setPlannedSelection(null)
+    setCommandError(null)
+    setCommandPhase('idle')
+    setSession(withSelection(nextSession, selectedNode.id))
   }
 
   async function createOutline() {
-    const artifactResult = await provider.createOutline({
-      graph: session.graph,
-      targetNodeId: session.graph.rootNodeId,
-    })
-    const graph = attachArtifact(session.graph, artifactResult.artifact)
-    const nextSession = appendHistory(
-      {
-        ...session,
-        graph,
-      },
-      createOperationRecord({
-        type: 'create_outline',
-        actorType: 'agent',
-        actorId: 'browser-user',
-        summary: artifactResult.summary,
-        patches: [
-          {
-            type: 'attach_artifact',
-            artifact: artifactResult.artifact,
-          },
-        ],
-      }),
-    )
+    if (!session) {
+      return
+    }
 
-    setSession(nextSession)
+    const nextSession = await runRemoteIntent({
+      sessionId: session.id,
+      intent: 'create_outline',
+      targetNodeId: session.graph.rootNodeId,
+      actorId: 'browser-user',
+    })
+    const nextSelectedNodeId =
+      selectedNode?.id ?? nextSession.graph.selection.focusedNodeId ?? nextSession.graph.rootNodeId
+
+    setCommandPlan(null)
+    setPlannedSelection(null)
+    setCommandError(null)
+    setCommandPhase('idle')
+    setSession(withSelection(nextSession, nextSelectedNodeId))
   }
 
-  function resetSession() {
-    const freshSession = createBrowserSession()
+  async function previewCommand(input: string) {
+    const trimmedInput = input.trim()
+
+    if (!session || !trimmedInput) {
+      setCommandPlan(null)
+      setPlannedSelection(null)
+      setCommandError(null)
+      setCommandPhase('idle')
+      return
+    }
+
+    setCommandPhase('planning')
+    setCommandError(null)
+
+    try {
+      const nextPlan = await planRemoteCommand({
+        sessionId: session.id,
+        input: trimmedInput,
+        actorId: 'browser-user',
+        selection: session.graph.selection,
+      })
+
+      setCommandPlan(nextPlan)
+      setPlannedSelection(session.graph.selection)
+    } catch (error) {
+      setCommandPlan(null)
+      setPlannedSelection(null)
+      setCommandError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setCommandPhase('idle')
+    }
+  }
+
+  async function runCommand(input: string) {
+    const trimmedInput = input.trim()
+
+    if (!session || !trimmedInput) {
+      return
+    }
+
+    setCommandPhase('executing')
+    setCommandError(null)
+
+    try {
+      const result = await runRemoteCommand({
+        sessionId: session.id,
+        input: trimmedInput,
+        actorId: 'browser-user',
+        selection: session.graph.selection,
+      })
+
+      setCommandPlan(result.plan)
+      setPlannedSelection(null)
+      setSession(result.session)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+      try {
+        const refreshedSession = await loadRemoteSession(session.id)
+        setSession(refreshedSession)
+      } catch {
+        // Keep the current browser state if the refresh also fails.
+      }
+    } finally {
+      setCommandPhase('idle')
+    }
+  }
+
+  async function applyPlannedCommand() {
+    if (!session || !commandPlan) {
+      return
+    }
+
+    setCommandPhase('executing')
+    setCommandError(null)
+
+    try {
+      const result = await applyRemoteCommandPlan({
+        sessionId: session.id,
+        plan: commandPlan,
+        actorId: 'browser-user',
+        selection: plannedSelection ?? undefined,
+      })
+
+      setCommandPlan(result.plan)
+      setPlannedSelection(null)
+      setSession(result.session)
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+
+      try {
+        const refreshedSession = await loadRemoteSession(session.id)
+        setSession(refreshedSession)
+      } catch {
+        // Keep the current browser state if the refresh also fails.
+      }
+    } finally {
+      setCommandPhase('idle')
+    }
+  }
+
+  async function replayCommandRun(commandRunId: string) {
+    if (!session) {
+      return
+    }
+
+    setCommandPhase('executing')
+    setCommandError(null)
+
+    try {
+      const result = await replayRemoteCommandRun({
+        sessionId: session.id,
+        commandRunId,
+        actorId: 'browser-user',
+      })
+
+      setCommandPlan(result.plan)
+      setPlannedSelection(null)
+      setSession(result.session)
+      setCommandError(null)
+      setCommandPhase('idle')
+    } catch (error) {
+      setCommandError(error instanceof Error ? error.message : String(error))
+
+      try {
+        const refreshedSession = await loadRemoteSession(session.id)
+        setSession(refreshedSession)
+      } catch {
+        // Keep the current browser state if the refresh also fails.
+      }
+    } finally {
+      setCommandPhase('idle')
+    }
+  }
+
+  async function resetSession() {
+    const freshSession = await createRemoteSession()
+    storeSessionId(freshSession.id)
+    setCommandPlan(null)
+    setPlannedSelection(null)
+    setCommandError(null)
+    setCommandPhase('idle')
     setSession(freshSession)
   }
 
   return {
-    session,
+    session: currentSession,
     selectedNode,
     latestArtifact,
+    commandPlan,
+    commandError,
+    commandPhase,
+    commandRuns: currentSession.commandRuns,
     generateFromPrompt,
     selectNode,
     renameSelectedNode,
@@ -352,6 +469,10 @@ export function useSessionViewModel() {
     deleteSelectedNode,
     expandSelectedBranch,
     createOutline,
+    previewCommand,
+    runCommand,
+    applyPlannedCommand,
+    replayCommandRun,
     resetSession,
   }
 }

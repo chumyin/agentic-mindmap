@@ -133,4 +133,306 @@ describe('mindmap runtime', () => {
       'create_outline',
     ])
   })
+
+  it('records manual edits as user-authored history by default', async () => {
+    const runtime = createMindmapRuntime({ rootDir })
+    const session = await runtime.createSession()
+
+    const edited = await runtime.applyManualEdits({
+      sessionId: session.id,
+      edits: [
+        {
+          type: 'create_node',
+          node: {
+            id: 'n_manual',
+            parentId: 'n_root',
+            kind: 'note',
+            title: 'Manual note',
+          },
+        },
+      ],
+    })
+
+    expect(edited.history.at(-1)).toMatchObject({
+      type: 'manual_edit',
+      actor: {
+        type: 'user',
+        id: 'user',
+      },
+    })
+  })
+
+  it('plans and executes a natural-language command through the shared runtime', async () => {
+    const runtime = createMindmapRuntime({ rootDir })
+    const session = await runtime.createSession()
+    const generated = await runtime.generateMap({
+      sessionId: session.id,
+      prompt: 'Launch strategy for a new B2B analytics product',
+      actorId: 'test-agent',
+    })
+    const targetNodeId = generated.graph.nodes[generated.graph.rootNodeId].children[0]
+
+    await runtime.applyManualEdits({
+      sessionId: generated.id,
+      edits: [
+        {
+          type: 'set_selection',
+          selection: {
+            focusedNodeId: targetNodeId,
+            selectedNodeIds: [targetNodeId],
+          },
+        },
+      ],
+      actorId: 'browser-user',
+      summary: 'Selected Goals branch.',
+    })
+
+    const planned = await runtime.planCommand({
+      sessionId: generated.id,
+      input: 'Rename this node to Priority goals',
+      actorId: 'test-agent',
+    })
+
+    expect(planned.toolCalls).toEqual([
+      expect.objectContaining({
+        toolName: 'rename_node',
+        arguments: expect.objectContaining({
+          nodeId: targetNodeId,
+          title: 'Priority goals',
+        }),
+      }),
+    ])
+
+    const unchanged = await runtime.loadSession(generated.id)
+    expect(unchanged.graph.nodes[targetNodeId]?.title).toBe('Goals')
+
+    const executed = await runtime.executeCommand({
+      sessionId: generated.id,
+      input: 'Rename this node to Priority goals',
+      actorId: 'test-agent',
+    })
+
+    expect(executed.plan.toolCalls).toHaveLength(1)
+    expect(executed.session.graph.nodes[targetNodeId]?.title).toBe('Priority goals')
+    expect(executed.session.commandRuns.at(-1)).toMatchObject({
+      status: 'executed',
+      completedToolCalls: 1,
+      plan: expect.objectContaining({
+        input: 'Rename this node to Priority goals',
+      }),
+    })
+  })
+
+  it('applies a previewed command plan without re-planning against the current selection', async () => {
+    const runtime = createMindmapRuntime({ rootDir })
+    const session = await runtime.createSession()
+    const generated = await runtime.generateMap({
+      sessionId: session.id,
+      prompt: 'Launch strategy for a new B2B analytics product',
+      actorId: 'test-agent',
+    })
+    const [targetNodeId, otherNodeId] =
+      generated.graph.nodes[generated.graph.rootNodeId].children
+
+    const plan = await runtime.planCommand({
+      sessionId: generated.id,
+      input: 'Rename this node to Priority goals',
+      actorId: 'test-agent',
+      selection: {
+        focusedNodeId: targetNodeId,
+        selectedNodeIds: [targetNodeId],
+      },
+    })
+
+    await runtime.applyManualEdits({
+      sessionId: generated.id,
+      edits: [
+        {
+          type: 'set_selection',
+          selection: {
+            focusedNodeId: otherNodeId,
+            selectedNodeIds: [otherNodeId],
+          },
+        },
+      ],
+      actorId: 'browser-user',
+      summary: 'Changed selection before applying the previewed plan.',
+    })
+
+    const applied = await runtime.applyCommandPlan({
+      sessionId: generated.id,
+      plan,
+      actorId: 'plan-agent',
+    })
+
+    expect(applied.session.graph.nodes[targetNodeId]?.title).toBe('Priority goals')
+    expect(applied.session.graph.nodes[otherNodeId]?.title).toBe('Audience')
+    expect(applied.session.commandRuns.at(-1)).toMatchObject({
+      status: 'executed',
+      completedToolCalls: 1,
+      actorId: 'plan-agent',
+      selection: {
+        focusedNodeId: targetNodeId,
+        selectedNodeIds: [targetNodeId],
+      },
+      plan,
+    })
+  })
+
+  it('executes a compound natural-language command through the shared runtime', async () => {
+    const runtime = createMindmapRuntime({ rootDir })
+    const session = await runtime.createSession()
+    const generated = await runtime.generateMap({
+      sessionId: session.id,
+      prompt: 'Launch strategy for a new B2B analytics product',
+      actorId: 'test-agent',
+    })
+    const targetNodeId = generated.graph.nodes[generated.graph.rootNodeId].children[0]
+
+    const executed = await runtime.executeCommand({
+      sessionId: generated.id,
+      input:
+        'Rename this node to Priority goals and add child node called Success metrics',
+      actorId: 'test-agent',
+      selection: {
+        focusedNodeId: targetNodeId,
+        selectedNodeIds: [targetNodeId],
+      },
+    })
+
+    expect(executed.plan.toolCalls).toHaveLength(2)
+    expect(executed.session.graph.nodes[targetNodeId]?.title).toBe('Priority goals')
+    expect(
+      Object.values(executed.session.graph.nodes).some(
+        (node) =>
+          node.parentId === targetNodeId && node.title === 'Success metrics',
+      ),
+    ).toBe(true)
+    expect(executed.session.commandRuns.at(-1)).toMatchObject({
+      status: 'executed',
+      completedToolCalls: 2,
+    })
+  })
+
+  it('persists a failed command run when execution cannot be planned', async () => {
+    const runtime = createMindmapRuntime({ rootDir })
+    const session = await runtime.createSession()
+
+    await expect(
+      runtime.executeCommand({
+        sessionId: session.id,
+        input: 'Teleport this map into a spreadsheet',
+        actorId: 'test-agent',
+      }),
+    ).rejects.toThrow(/unsupported natural-language command/i)
+
+    const reloaded = await runtime.loadSession(session.id)
+
+    expect(reloaded.commandRuns.at(-1)).toMatchObject({
+      status: 'failed',
+      completedToolCalls: 0,
+      error: expect.stringMatching(/unsupported natural-language command/i),
+      plan: null,
+    })
+  })
+
+  it('lists, loads, and replays persisted command runs', async () => {
+    const runtime = createMindmapRuntime({ rootDir })
+    const session = await runtime.createSession()
+    const generated = await runtime.generateMap({
+      sessionId: session.id,
+      prompt: 'Launch strategy for a new B2B analytics product',
+      actorId: 'test-agent',
+    })
+    const targetNodeId = generated.graph.nodes[generated.graph.rootNodeId].children[0]
+
+    const executed = await runtime.executeCommand({
+      sessionId: generated.id,
+      input:
+        'Rename this node to Priority goals and add child node called Success metrics',
+      actorId: 'test-agent',
+      selection: {
+        focusedNodeId: targetNodeId,
+        selectedNodeIds: [targetNodeId],
+      },
+    })
+    const commandRunId = executed.session.commandRuns.at(-1)?.id
+
+    expect(commandRunId).toBeDefined()
+
+    const commandRuns = await runtime.listCommandRuns(generated.id)
+
+    expect(commandRuns).toHaveLength(1)
+    expect(commandRuns[0]).toMatchObject({
+      id: commandRunId,
+      status: 'executed',
+      completedToolCalls: 2,
+      selection: {
+        focusedNodeId: targetNodeId,
+        selectedNodeIds: [targetNodeId],
+      },
+    })
+
+    const commandRun = await runtime.loadCommandRun(
+      generated.id,
+      commandRunId as string,
+    )
+
+    expect(commandRun).toMatchObject({
+      id: commandRunId,
+      input:
+        'Rename this node to Priority goals and add child node called Success metrics',
+    })
+
+    const replayed = await runtime.replayCommandRun(
+      generated.id,
+      commandRunId as string,
+      'replay-agent',
+    )
+
+    expect(replayed.plan.toolCalls).toHaveLength(2)
+    expect(replayed.session.commandRuns).toHaveLength(2)
+    expect(replayed.session.commandRuns.at(-1)).toMatchObject({
+      status: 'executed',
+      completedToolCalls: 2,
+      actorId: 'replay-agent',
+      replayOfCommandRunId: commandRunId,
+    })
+    expect(
+      Object.values(replayed.session.graph.nodes).filter(
+        (node) =>
+          node.parentId === targetNodeId && node.title === 'Success metrics',
+      ),
+    ).toHaveLength(2)
+  })
+
+  it('fails when loading an unknown command run', async () => {
+    const runtime = createMindmapRuntime({ rootDir })
+    const session = await runtime.createSession()
+
+    await expect(
+      runtime.loadCommandRun(session.id, 'cmd_missing'),
+    ).rejects.toThrow('Command run "cmd_missing" was not found.')
+  })
+
+  it('rejects replay when a command run has no captured plan', async () => {
+    const runtime = createMindmapRuntime({ rootDir })
+    const session = await runtime.createSession()
+
+    await expect(
+      runtime.executeCommand({
+        sessionId: session.id,
+        input: 'Teleport this map into a spreadsheet',
+        actorId: 'test-agent',
+      }),
+    ).rejects.toThrow(/unsupported natural-language command/i)
+
+    const failedRunId = (await runtime.loadSession(session.id)).commandRuns.at(-1)?.id
+
+    await expect(
+      runtime.replayCommandRun(session.id, failedRunId as string),
+    ).rejects.toThrow(
+      `Command run "${failedRunId}" cannot be replayed because no plan was captured.`,
+    )
+  })
 })

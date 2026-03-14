@@ -64,25 +64,31 @@ This repo is now in the `functional prototype` stage.
 What exists now:
 
 - a browser workspace for prompt-to-map generation
+- natural-language agent commands that preview structured tool calls before execution
+- exact plan application after preview, so humans or external agents can approve and run the same structured trace
+- persisted command-run traces with discovery and replay on the shared session
 - direct node selection and manual branch editing
 - structured branch actions backed by a deterministic mock provider
 - outline artifact generation
-- a CLI surface for session creation, graph generation, actions, and export
+- a CLI surface for session creation, graph generation, actions, export, exact plan apply, and command replay
+- protocol discovery surfaces for external agents through CLI plus HTTP
+- a standalone `serve` daemon plus Vite middleware fallback for the same local API
+- a shared local API and file-backed session backend for browser plus CLI flows
 - a shared graph core with immutable edits and operation history
 
 Current constraints:
 
-- the browser uses local `localStorage` for its prototype session backend
-- the CLI uses file-backed sessions under `.agentic-mindmap/sessions/`
 - the provider is mocked and deterministic, not a real LLM integration
+- the standalone daemon is local-only and unauthenticated by design
+- the browser still defaults to same-origin unless an external daemon endpoint is configured
 - layout and transforms are intentionally narrow and heuristic
 
 What does not exist yet:
 
 - real AI provider integration
-- shared browser and CLI runtime backend
 - multi-user collaboration
 - production-grade export and execution workflows
+- a hardened remote runtime story beyond the local daemon
 
 ## Local development
 
@@ -114,6 +120,107 @@ Export an outline:
 npm run cli -- export --session <session-id> --format outline
 ```
 
+List existing sessions for agent discovery:
+
+```bash
+npm run cli -- session list
+```
+
+Describe the supported protocol surface:
+
+```bash
+npm run cli -- describe
+```
+
+Preview how a natural-language command will be translated into tool calls:
+
+```bash
+echo '{"input":"Rename this node to Priority goals","mode":"plan"}' | \
+  npm run cli -- command --session <session-id>
+```
+
+Apply a previously reviewed command plan exactly as supplied:
+
+```bash
+echo '{"plan":{"input":"Rename this node to Priority goals","summary":"Rename \"Goals\" to \"Priority goals\".","target":{"sessionId":"<session-id>","nodeId":"n_root_goals_1","nodeTitle":"Goals"},"toolCalls":[{"id":"call_rename_node_1","toolName":"rename_node","arguments":{"nodeId":"n_root_goals_1","title":"Priority goals"}}]}}' | \
+  npm run cli -- command apply --session <session-id>
+```
+
+Execute a natural-language command against the current selection:
+
+```bash
+echo '{"input":"Create an outline for this branch","mode":"execute"}' | \
+  npm run cli -- command --session <session-id>
+```
+
+Executed commands are persisted on the session as `commandRuns`, including
+status, completed step count, replay provenance, and any failure reason.
+
+This gives the prototype two execution modes:
+
+- natural language -> plan -> execute
+- reviewed plan -> exact apply
+
+List recent command runs for a session:
+
+```bash
+npm run cli -- command list --session <session-id>
+```
+
+Inspect one persisted command run:
+
+```bash
+npm run cli -- command show --session <session-id> --run <command-run-id>
+```
+
+Replay a persisted command run against the current session graph:
+
+```bash
+npm run cli -- command replay --session <session-id> --run <command-run-id>
+```
+
+Replay appends a new `commandRuns` entry with `replayOfCommandRunId`, so agents can
+trace which execution came from a previous run.
+
+Apply a manual graph edit:
+
+```bash
+echo '{"edits":[{"type":"create_node","node":{"id":"n_manual","parentId":"n_root","kind":"note","title":"Manual note"}}]}' | \
+  npm run cli -- edit --session <session-id>
+```
+
+Run the standalone local daemon:
+
+```bash
+npm run cli -- serve --host 127.0.0.1 --port 3210
+```
+
+The daemon prints a machine-readable startup record with its `origin` and `apiBase`.
+
+Discovery endpoints exposed by the daemon:
+
+- `GET /api/mindmap/health`
+- `GET /api/mindmap/describe`
+- `GET /api/mindmap/session`
+- `POST /api/mindmap/session/:id/command`
+- `POST /api/mindmap/session/:id/command/apply`
+- `GET /api/mindmap/session/:id/command`
+- `GET /api/mindmap/session/:id/command/:commandRunId`
+- `POST /api/mindmap/session/:id/command/:commandRunId/replay`
+
+Point the browser workspace at the standalone daemon:
+
+```text
+http://127.0.0.1:5173/?mindmapApi=http://127.0.0.1:3210
+```
+
+The browser will persist that override locally and fall back to same-origin only when a stored external endpoint becomes unreachable.
+
+The browser prompt panel now supports two mixed-control loops:
+
+- preview a command plan and apply that exact plan
+- replay one of the recent command runs without leaving the shared session workflow
+
 ## Verification
 
 Run the current checks:
@@ -133,6 +240,7 @@ See:
 
 - [`docs/vision.md`](docs/vision.md)
 - [`docs/roadmap.md`](docs/roadmap.md)
+- [`docs/protocol.md`](docs/protocol.md)
 - [`docs/plans/2026-03-14-agentic-mindmap-prototype-design.md`](docs/plans/2026-03-14-agentic-mindmap-prototype-design.md)
 - [`docs/plans/2026-03-14-agentic-mindmap-prototype-implementation-plan.md`](docs/plans/2026-03-14-agentic-mindmap-prototype-implementation-plan.md)
 
