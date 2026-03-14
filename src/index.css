@@ -1,16 +1,15 @@
 :root {
-  --bg: #f7efe2;
-  --surface: #fffaf0;
-  --text: #5e503f;
-  --text-h: #21160f;
-  --text-muted: #7f6c56;
+  --bg: #f4eadc;
+  --surface: #fffaf1;
+  --text: #594a3c;
+  --text-h: #1e150f;
+  --text-muted: #7c6956;
   --border: rgba(102, 71, 43, 0.14);
   --border-strong: rgba(102, 71, 43, 0.24);
-  --accent: #b6572f;
-  --signal: #ed9d38;
-  --ink: #2f241c;
+  --accent: #b7562f;
+  --ink: #2c2119;
   --shadow:
-    0 20px 60px rgba(70, 53, 34, 0.14), 0 8px 24px rgba(70, 53, 34, 0.08);
+    0 26px 70px rgba(70, 53, 34, 0.14), 0 8px 24px rgba(70, 53, 34, 0.08);
 
   --sans: 'Instrument Sans', 'Avenir Next', 'Segoe UI', sans-serif;
   --heading: 'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', serif;
@@ -31,9 +30,9 @@ body {
   min-width: 320px;
   min-height: 100vh;
   background:
-    radial-gradient(circle at top left, rgba(237, 157, 56, 0.22), transparent 30%),
-    radial-gradient(circle at top right, rgba(182, 87, 47, 0.14), transparent 28%),
-    linear-gradient(180deg, #f9f1e6, #f4eadc 44%, #f7efe2);
+    radial-gradient(circle at top left, rgba(237, 157, 56, 0.18), transparent 28%),
+    radial-gradient(circle at top right, rgba(183, 86, 47, 0.14), transparent 26%),
+    linear-gradient(180deg, #fbf2e6, #f3e7d8 46%, #f4eadc);
 }
 
 * {
@@ -57,33 +56,35 @@ h2,
 h3 {
   font-family: var(--heading);
   font-weight: 600;
-  line-height: 1.08;
+  line-height: 1.06;
   color: var(--text-h);
 }
 
 h1 {
-  font-size: clamp(2.8rem, 6vw, 5rem);
+  font-size: clamp(2.5rem, 5vw, 4.2rem);
   letter-spacing: -0.05em;
-  margin: 0;
 }
 
 h2 {
-  font-size: clamp(2rem, 3vw, 2.8rem);
+  font-size: clamp(1.6rem, 2.4vw, 2.4rem);
   letter-spacing: -0.04em;
-  margin: 0;
 }
 
-h3 {
-  margin: 0;
-  font-size: 1.18rem;
-}
-
+h3,
 p {
   margin: 0;
 }
 
-a {
-  color: inherit;
+button,
+input,
+textarea {
+  outline: none;
+}
+
+button:focus-visible,
+input:focus-visible,
+textarea:focus-visible {
+  box-shadow: 0 0 0 3px rgba(183, 86, 47, 0.18);
 }
 
 @media (max-width: 720px) {
