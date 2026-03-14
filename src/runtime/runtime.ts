@@ -178,6 +178,38 @@ function selectionFromPlanTarget(plan: MindmapCommandPlan): MindmapSelection | n
   }
 }
 
+function sanitizeSelectionForGraph(input: {
+  graph: MindmapSession['graph']
+  selection: MindmapSelection
+  fallbackSelection?: MindmapSelection
+}): MindmapSelection {
+  const validRequestedNodeIds = input.selection.selectedNodeIds.filter(
+    (nodeId) => Boolean(input.graph.nodes[nodeId]),
+  )
+  const fallbackSelection = input.fallbackSelection ?? input.graph.selection
+  const validFallbackNodeIds = fallbackSelection.selectedNodeIds.filter((nodeId) =>
+    Boolean(input.graph.nodes[nodeId]),
+  )
+  const fallbackFocusedNodeId =
+    fallbackSelection.focusedNodeId &&
+    input.graph.nodes[fallbackSelection.focusedNodeId]
+      ? fallbackSelection.focusedNodeId
+      : validFallbackNodeIds[0] ?? input.graph.rootNodeId
+  const focusedNodeId =
+    input.selection.focusedNodeId &&
+    input.graph.nodes[input.selection.focusedNodeId]
+      ? input.selection.focusedNodeId
+      : validRequestedNodeIds[0] ?? fallbackFocusedNodeId
+
+  return {
+    focusedNodeId,
+    selectedNodeIds: [
+      focusedNodeId,
+      ...validRequestedNodeIds.filter((nodeId) => nodeId !== focusedNodeId),
+    ],
+  }
+}
+
 function readRawPlanInput(plan: unknown): string {
   if (
     typeof plan === 'object' &&
@@ -410,14 +442,25 @@ export function createMindmapRuntime(
     const actorId = input.actorId ?? 'command-agent'
     let completedToolCalls = 0
     let plan: MindmapCommandPlan | null = null
-    let selection = input.selection ?? originalSession.graph.selection
+    let selection = sanitizeSelectionForGraph({
+      graph: originalSession.graph,
+      selection: input.selection ?? originalSession.graph.selection,
+      fallbackSelection: originalSession.graph.selection,
+    })
 
     try {
       plan = validateMindmapCommandPlan(input.plan)
-      selection =
-        input.selection ??
-        selectionFromPlanTarget(plan) ??
-        originalSession.graph.selection
+      const planTargetSelection = selectionFromPlanTarget(plan)
+      const fallbackSelection =
+        planTargetSelection?.focusedNodeId &&
+        originalSession.graph.nodes[planTargetSelection.focusedNodeId]
+          ? planTargetSelection
+          : originalSession.graph.selection
+      selection = sanitizeSelectionForGraph({
+        graph: originalSession.graph,
+        selection: input.selection ?? planTargetSelection ?? fallbackSelection,
+        fallbackSelection,
+      })
 
       if (plan.target.sessionId !== input.sessionId) {
         throw new Error(

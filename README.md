@@ -225,8 +225,8 @@ http://127.0.0.1:5173/?mindmapApi=http://127.0.0.1:3210
 ```
 
 The browser will persist that override locally and fall back to same-origin when a
-stored external endpoint becomes unreachable or responds like an incompatible daemon
-such as `404` or `5xx`.
+stored external endpoint becomes unreachable or behaves like an incompatible daemon,
+for example by missing the create-session route or returning a non-JSON error page.
 
 The browser prompt panel now supports two mixed-control loops:
 
