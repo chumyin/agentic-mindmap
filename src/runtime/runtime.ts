@@ -10,7 +10,7 @@ import type {
 import { planMindmapCommand } from './command-planner'
 import { createSessionStore } from './session-store'
 import { createMockProvider } from './mock-provider'
-import { summarizeSession } from './protocol'
+import { summarizeSession, validateMindmapCommandPlan } from './protocol'
 import type {
   ApplyCommandPlanInput,
   ApplyManualEditsInput,
@@ -107,6 +107,27 @@ function appendCommandRun(
   }
 }
 
+function withSessionSelection(
+  session: MindmapSession,
+  selection: MindmapSelection,
+): MindmapSession {
+  return {
+    ...session,
+    graph: setSelection(session.graph, selection),
+  }
+}
+
+function recordCommandRun(
+  session: MindmapSession,
+  input: Omit<MindmapCommandRun, 'id' | 'createdAt'>,
+): MindmapSession {
+  return appendCommandRun(session, {
+    id: makeCommandRunId(),
+    createdAt: nowIso(),
+    ...input,
+  })
+}
+
 async function resolveIntentResult(input: {
   intent: MindmapIntentType
   session: MindmapSession
@@ -157,11 +178,129 @@ function selectionFromPlanTarget(plan: MindmapCommandPlan): MindmapSelection | n
   }
 }
 
+function readRawPlanInput(plan: unknown): string {
+  if (
+    typeof plan === 'object' &&
+    plan !== null &&
+    !Array.isArray(plan) &&
+    typeof (plan as { input?: unknown }).input === 'string'
+  ) {
+    return (plan as { input: string }).input
+  }
+
+  return 'Invalid command plan'
+}
+
 export function createMindmapRuntime(
   options: SessionStoreOptions & { provider?: MindmapProvider } = {},
 ) {
   const store = createSessionStore(options)
   const provider = options.provider ?? createMockProvider()
+
+  async function generateMapOnSession(input: {
+    session: MindmapSession
+    prompt: string
+    actorId?: string
+  }): Promise<MindmapSession> {
+    const baseGraph = createGraph(input.prompt)
+    const generation = await provider.generateInitialMap({
+      prompt: input.prompt,
+      rootNodeId: baseGraph.rootNodeId,
+    })
+    const graph = setSelection(applyGraphEdits(baseGraph, generation.edits), {
+      focusedNodeId: baseGraph.rootNodeId,
+      selectedNodeIds: [baseGraph.rootNodeId],
+    })
+
+    return appendHistory(
+      {
+        ...input.session,
+        graph,
+      },
+      createOperationRecord({
+        type: 'generate_map',
+        actorType: 'agent',
+        actorId: input.actorId ?? 'system',
+        summary: generation.summary,
+        patches: generation.edits,
+      }),
+    )
+  }
+
+  async function runIntentOnSession(input: {
+    session: MindmapSession
+    intent: MindmapIntentType
+    targetNodeId: string
+    instruction?: string
+    actorId?: string
+  }): Promise<MindmapSession> {
+    const target = input.session.graph.nodes[input.targetNodeId]
+
+    if (!target) {
+      throw new Error(`Node "${input.targetNodeId}" was not found.`)
+    }
+
+    const resolved = await resolveIntentResult({
+      intent: input.intent,
+      session: input.session,
+      provider,
+      targetNodeId: input.targetNodeId,
+      instruction: input.instruction,
+    })
+
+    if (resolved.mode === 'edits') {
+      return appendHistory(
+        {
+          ...input.session,
+          graph: applyGraphEdits(input.session.graph, resolved.result.edits),
+        },
+        createOperationRecord({
+          type: resolved.type,
+          actorType: 'agent',
+          actorId: input.actorId ?? 'system',
+          summary: resolved.result.summary,
+          patches: resolved.result.edits,
+        }),
+      )
+    }
+
+    return appendHistory(
+      {
+        ...input.session,
+        graph: attachArtifact(input.session.graph, resolved.result.artifact),
+      },
+      createOperationRecord({
+        type: resolved.type,
+        actorType: 'agent',
+        actorId: input.actorId ?? 'system',
+        summary: resolved.result.summary,
+        patches: [
+          {
+            type: 'attach_artifact',
+            artifact: resolved.result.artifact,
+          },
+        ],
+      }),
+    )
+  }
+
+  function applyManualEditsToSession(
+    input: ApplyManualEditsInput & { session: MindmapSession },
+  ): MindmapSession {
+    return appendHistory(
+      {
+        ...input.session,
+        graph: applyGraphEdits(input.session.graph, input.edits),
+      },
+      createOperationRecord({
+        type: 'manual_edit',
+        actorType: input.actorType ?? 'user',
+        actorId: input.actorId ?? 'user',
+        summary: input.summary ?? `Applied ${input.edits.length} manual edits.`,
+        patches: input.edits,
+      }),
+    )
+  }
 
   async function saveSession(session: MindmapSession): Promise<MindmapSession> {
     await store.saveSession(session)
@@ -196,113 +335,38 @@ export function createMindmapRuntime(
 
   async function generateMap(input: GenerateMapInput): Promise<MindmapSession> {
     const session = await loadSession(input.sessionId)
-    const baseGraph = createGraph(input.prompt)
-    const generation = await provider.generateInitialMap({
-      prompt: input.prompt,
-      rootNodeId: baseGraph.rootNodeId,
-    })
-    const graph = setSelection(
-      applyGraphEdits(baseGraph, generation.edits),
-      {
-        focusedNodeId: baseGraph.rootNodeId,
-        selectedNodeIds: [baseGraph.rootNodeId],
-      },
-    )
-    const nextSession = appendHistory(
-      {
-        ...session,
-        graph,
-      },
-      createOperationRecord({
-        type: 'generate_map',
-        actorType: 'agent',
-        actorId: input.actorId ?? 'system',
-        summary: generation.summary,
-        patches: generation.edits,
+    return saveSession(
+      await generateMapOnSession({
+        session,
+        prompt: input.prompt,
+        actorId: input.actorId,
       }),
     )
-
-    return saveSession(nextSession)
   }
 
   async function runIntent(input: RunIntentInput): Promise<MindmapSession> {
     const session = await loadSession(input.sessionId)
-    const target = session.graph.nodes[input.targetNodeId]
-
-    if (!target) {
-      throw new Error(`Node "${input.targetNodeId}" was not found.`)
-    }
-
-    const resolved = await resolveIntentResult({
-      intent: input.intent,
-      session,
-      provider,
-      targetNodeId: input.targetNodeId,
-      instruction: input.instruction,
-    })
-
-    if (resolved.mode === 'edits') {
-      const graph = applyGraphEdits(session.graph, resolved.result.edits)
-      const nextSession = appendHistory(
-        {
-          ...session,
-          graph,
-        },
-        createOperationRecord({
-          type: resolved.type,
-          actorType: 'agent',
-          actorId: input.actorId ?? 'system',
-          summary: resolved.result.summary,
-          patches: resolved.result.edits,
-        }),
-      )
-
-      return saveSession(nextSession)
-    }
-
-    const graph = attachArtifact(session.graph, resolved.result.artifact)
-    const nextSession = appendHistory(
-      {
-        ...session,
-        graph,
-      },
-      createOperationRecord({
-        type: resolved.type,
-        actorType: 'agent',
-        actorId: input.actorId ?? 'system',
-        summary: resolved.result.summary,
-        patches: [
-          {
-            type: 'attach_artifact',
-            artifact: resolved.result.artifact,
-          },
-        ],
+    return saveSession(
+      await runIntentOnSession({
+        session,
+        intent: input.intent,
+        targetNodeId: input.targetNodeId,
+        instruction: input.instruction,
+        actorId: input.actorId,
       }),
     )
-
-    return saveSession(nextSession)
   }
 
   async function applyManualEdits(
     input: ApplyManualEditsInput,
   ): Promise<MindmapSession> {
     const session = await loadSession(input.sessionId)
-    const graph = applyGraphEdits(session.graph, input.edits)
-    const nextSession = appendHistory(
-      {
-        ...session,
-        graph,
-      },
-      createOperationRecord({
-        type: 'manual_edit',
-        actorType: input.actorType ?? 'user',
-        actorId: input.actorId ?? 'user',
-        summary: input.summary ?? `Applied ${input.edits.length} manual edits.`,
-        patches: input.edits,
+    return saveSession(
+      applyManualEditsToSession({
+        ...input,
+        session,
       }),
     )
-
-    return saveSession(nextSession)
   }
 
   async function planCommand(input: PlanCommandInput) {
@@ -342,51 +406,59 @@ export function createMindmapRuntime(
   async function applyCommandPlan(
     input: ApplyCommandPlanInput,
   ): Promise<ExecuteCommandResult> {
-    let currentSession = await loadSession(input.sessionId)
-    const selection =
-      input.selection ??
-      selectionFromPlanTarget(input.plan) ??
-      currentSession.graph.selection
+    const originalSession = await loadSession(input.sessionId)
     const actorId = input.actorId ?? 'command-agent'
     let completedToolCalls = 0
+    let plan: MindmapCommandPlan | null = null
+    let selection = input.selection ?? originalSession.graph.selection
 
     try {
-      for (const toolCall of input.plan.toolCalls) {
-        currentSession = await executeToolCall({
-          session: currentSession,
+      plan = validateMindmapCommandPlan(input.plan)
+      selection =
+        input.selection ??
+        selectionFromPlanTarget(plan) ??
+        originalSession.graph.selection
+
+      if (plan.target.sessionId !== input.sessionId) {
+        throw new Error(
+          `Command plan targets session "${plan.target.sessionId}" but was applied to session "${input.sessionId}".`,
+        )
+      }
+
+      let workingSession = withSessionSelection(originalSession, selection)
+
+      for (const toolCall of plan.toolCalls) {
+        workingSession = await executeToolCall({
+          session: workingSession,
           toolCall,
           actorId: input.actorId,
         })
         completedToolCalls += 1
       }
 
-      const nextSession = appendCommandRun(currentSession, {
-        id: makeCommandRunId(),
-        input: input.plan.input,
+      const nextSession = recordCommandRun(workingSession, {
+        input: plan.input,
         actorId,
-        createdAt: nowIso(),
         selection,
         replayOfCommandRunId: input.replayOfCommandRunId,
         status: 'executed',
         completedToolCalls,
-        plan: input.plan,
+        plan,
       })
 
       return {
-        plan: input.plan,
+        plan,
         session: await saveSession(nextSession),
       }
     } catch (error) {
-      const nextSession = appendCommandRun(currentSession, {
-        id: makeCommandRunId(),
-        input: input.plan.input,
+      const nextSession = recordCommandRun(originalSession, {
+        input: plan?.input ?? readRawPlanInput(input.plan),
         actorId,
-        createdAt: nowIso(),
         selection,
         replayOfCommandRunId: input.replayOfCommandRunId,
         status: 'failed',
         completedToolCalls,
-        plan: input.plan,
+        plan,
         error: error instanceof Error ? error.message : String(error),
       })
       await saveSession(nextSession)
@@ -461,13 +533,14 @@ export function createMindmapRuntime(
   }): Promise<MindmapSession> {
     switch (input.toolCall.toolName) {
       case 'generate_map':
-        return generateMap({
-          sessionId: input.session.id,
+        return generateMapOnSession({
+          session: input.session,
           prompt: String(input.toolCall.arguments.prompt ?? ''),
           actorId: input.actorId ?? 'command-agent',
         })
       case 'rename_node':
-        return applyManualEdits({
+        return applyManualEditsToSession({
+          session: input.session,
           sessionId: input.session.id,
           edits: [
             {
@@ -495,7 +568,8 @@ export function createMindmapRuntime(
           title,
         })
 
-        return applyManualEdits({
+        return applyManualEditsToSession({
+          session: input.session,
           sessionId: input.session.id,
           edits: [
             {
@@ -514,7 +588,8 @@ export function createMindmapRuntime(
         })
       }
       case 'delete_node':
-        return applyManualEdits({
+        return applyManualEditsToSession({
+          session: input.session,
           sessionId: input.session.id,
           edits: [
             {
@@ -527,8 +602,8 @@ export function createMindmapRuntime(
           summary: `Deleted node "${String(input.toolCall.arguments.nodeId ?? '')}".`,
         })
       case 'run_intent':
-        return runIntent({
-          sessionId: input.session.id,
+        return runIntentOnSession({
+          session: input.session,
           intent: input.toolCall.arguments.intent as MindmapIntentType,
           targetNodeId: String(input.toolCall.arguments.targetNodeId ?? ''),
           instruction:
@@ -537,6 +612,8 @@ export function createMindmapRuntime(
               : undefined,
           actorId: input.actorId ?? 'command-agent',
         })
+      default:
+        throw new Error(`Unsupported command tool "${String(input.toolCall.toolName)}".`)
     }
   }
 

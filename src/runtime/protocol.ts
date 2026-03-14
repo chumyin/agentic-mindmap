@@ -1,4 +1,11 @@
-import type { MindmapSessionSummary } from './session-types'
+import type { MindmapNodeKind } from '../core/graph-types'
+import type {
+  MindmapCommandPlan,
+  MindmapCommandToolCall,
+  MindmapCommandToolName,
+  MindmapIntentType,
+  MindmapSessionSummary,
+} from './session-types'
 
 export const MINDMAP_PROTOCOL_VERSION = '0.1'
 export const MINDMAP_GRAPH_VERSION = '0.1'
@@ -10,6 +17,14 @@ export const MINDMAP_SUPPORTED_INTENTS = [
 ] as const
 
 export const MINDMAP_SUPPORTED_ACTOR_TYPES = ['user', 'agent', 'system'] as const
+export const MINDMAP_SUPPORTED_NODE_KINDS = [
+  'topic',
+  'subtopic',
+  'task',
+  'question',
+  'risk',
+  'note',
+] as const
 export const MINDMAP_SUPPORTED_EDIT_TYPES = [
   'create_node',
   'update_node',
@@ -30,6 +45,159 @@ export const MINDMAP_SUPPORTED_COMMAND_TOOLS = [
   'delete_node',
   'run_intent',
 ] as const
+export const MINDMAP_REPLAY_MODE = 'best_effort_current_state'
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function expectNonEmptyString(value: unknown, fieldName: string): string {
+  if (typeof value !== 'string' || value.length === 0) {
+    throw new Error(`Expected "${fieldName}" to be a non-empty string.`)
+  }
+
+  return value
+}
+
+function expectOptionalString(value: unknown, fieldName: string): string | undefined {
+  if (value === undefined) {
+    return undefined
+  }
+
+  if (typeof value !== 'string') {
+    throw new Error(`Expected "${fieldName}" to be a string when provided.`)
+  }
+
+  return value
+}
+
+export function isMindmapIntentType(value: unknown): value is MindmapIntentType {
+  return (
+    value === 'expand_branch' ||
+    value === 'summarize_branch' ||
+    value === 'create_outline'
+  )
+}
+
+export function isMindmapNodeKind(value: unknown): value is MindmapNodeKind {
+  return MINDMAP_SUPPORTED_NODE_KINDS.includes(value as MindmapNodeKind)
+}
+
+export function isMindmapCommandToolName(
+  value: unknown,
+): value is MindmapCommandToolName {
+  return MINDMAP_SUPPORTED_COMMAND_TOOLS.includes(value as MindmapCommandToolName)
+}
+
+function validateCommandToolCall(
+  value: unknown,
+  index: number,
+): MindmapCommandToolCall {
+  if (!isRecord(value)) {
+    throw new Error(`Expected "plan.toolCalls[${index}]" to be an object.`)
+  }
+
+  const fieldPrefix = `plan.toolCalls[${index}]`
+  const toolName = value.toolName
+
+  if (!isMindmapCommandToolName(toolName)) {
+    throw new Error(`Unsupported command tool "${String(toolName)}".`)
+  }
+
+  const argumentsValue = value.arguments
+
+  if (!isRecord(argumentsValue)) {
+    throw new Error(`Expected "${fieldPrefix}.arguments" to be an object.`)
+  }
+
+  const id = expectNonEmptyString(value.id, `${fieldPrefix}.id`)
+
+  switch (toolName) {
+    case 'generate_map':
+      expectNonEmptyString(argumentsValue.prompt, `${fieldPrefix}.arguments.prompt`)
+      break
+    case 'rename_node':
+      expectNonEmptyString(argumentsValue.nodeId, `${fieldPrefix}.arguments.nodeId`)
+      expectNonEmptyString(argumentsValue.title, `${fieldPrefix}.arguments.title`)
+      break
+    case 'add_child_node': {
+      expectNonEmptyString(argumentsValue.parentId, `${fieldPrefix}.arguments.parentId`)
+      expectNonEmptyString(argumentsValue.title, `${fieldPrefix}.arguments.title`)
+
+      if (
+        argumentsValue.kind !== undefined &&
+        !isMindmapNodeKind(argumentsValue.kind)
+      ) {
+        throw new Error(`Unsupported node kind "${String(argumentsValue.kind)}".`)
+      }
+
+      break
+    }
+    case 'delete_node':
+      expectNonEmptyString(argumentsValue.nodeId, `${fieldPrefix}.arguments.nodeId`)
+      break
+    case 'run_intent':
+      if (!isMindmapIntentType(argumentsValue.intent)) {
+        throw new Error(
+          `Expected "${fieldPrefix}.arguments.intent" to be one of expand_branch, summarize_branch, or create_outline.`,
+        )
+      }
+
+      expectNonEmptyString(
+        argumentsValue.targetNodeId,
+        `${fieldPrefix}.arguments.targetNodeId`,
+      )
+      expectOptionalString(
+        argumentsValue.instruction,
+        `${fieldPrefix}.arguments.instruction`,
+      )
+      break
+  }
+
+  return {
+    id,
+    toolName,
+    arguments: argumentsValue,
+  }
+}
+
+export function validateMindmapCommandPlan(value: unknown): MindmapCommandPlan {
+  if (!isRecord(value)) {
+    throw new Error('Expected "plan" to be an object.')
+  }
+
+  if (!isRecord(value.target)) {
+    throw new Error('Expected "plan.target" to be an object.')
+  }
+
+  if (!Array.isArray(value.toolCalls) || value.toolCalls.length === 0) {
+    throw new Error('Expected "plan.toolCalls" to be a non-empty array.')
+  }
+
+  const nodeId = value.target.nodeId
+  const nodeTitle = value.target.nodeTitle
+
+  if (nodeId !== null && typeof nodeId !== 'string') {
+    throw new Error('Expected "plan.target.nodeId" to be a string or null.')
+  }
+
+  if (nodeTitle !== null && typeof nodeTitle !== 'string') {
+    throw new Error('Expected "plan.target.nodeTitle" to be a string or null.')
+  }
+
+  return {
+    input: expectNonEmptyString(value.input, 'plan.input'),
+    summary: expectNonEmptyString(value.summary, 'plan.summary'),
+    target: {
+      sessionId: expectNonEmptyString(value.target.sessionId, 'plan.target.sessionId'),
+      nodeId: nodeId ?? null,
+      nodeTitle: nodeTitle ?? null,
+    },
+    toolCalls: value.toolCalls.map((toolCall, index) =>
+      validateCommandToolCall(toolCall, index),
+    ),
+  }
+}
 
 export function createMindmapProtocolDescription(input: { rootDir: string }) {
   return {
@@ -40,6 +208,7 @@ export function createMindmapProtocolDescription(input: { rootDir: string }) {
     providerModes: ['mock'],
     supportedIntents: [...MINDMAP_SUPPORTED_INTENTS],
     supportedActorTypes: [...MINDMAP_SUPPORTED_ACTOR_TYPES],
+    supportedNodeKinds: [...MINDMAP_SUPPORTED_NODE_KINDS],
     supportedEditTypes: [...MINDMAP_SUPPORTED_EDIT_TYPES],
     supportedArtifactKinds: [...MINDMAP_SUPPORTED_ARTIFACT_KINDS],
     supportedCommandTools: [...MINDMAP_SUPPORTED_COMMAND_TOOLS],
@@ -48,6 +217,12 @@ export function createMindmapProtocolDescription(input: { rootDir: string }) {
       acceptsSelectionContext: true,
       supportsCompoundCommands: true,
       supportsPlanApply: true,
+      planApplyAtomic: true,
+    },
+    replayContract: {
+      mode: MINDMAP_REPLAY_MODE,
+      reappliesStoredSelection: true,
+      reusesCurrentSessionGraph: true,
     },
     commandExamples: [
       {

@@ -132,6 +132,7 @@ The command contract is intentionally two-step:
 - optionally apply a reviewed plan exactly as supplied, without re-planning
 - selection context can be supplied explicitly by clients that have local UI state
 - compound commands are supported when each step maps cleanly to a known command verb
+- exact plan apply is atomic: a failing multi-step plan records a failed run without partially mutating the graph
 
 Executed command traces are persisted on the session itself:
 
@@ -154,6 +155,10 @@ Exact plan-apply semantics:
 
 - the supplied `plan.toolCalls` are executed directly
 - the runtime does not re-interpret the original natural-language input
+- `plan.target.sessionId` must match the session being mutated
+- plan apply re-applies the supplied selection, or derives selection from `plan.target.nodeId` when possible
+- successful plan apply persists that execution selection on the graph state
+- failed plan apply persists a failed `commandRuns` entry on the original graph state without partial graph mutations
 - if clients want audit selection provenance, they should send the same `selection` used during planning
 - when no explicit `selection` is sent, the runtime derives it from `plan.target.nodeId` when available
 
@@ -181,6 +186,9 @@ Replay semantics:
 
 - replay reuses the stored structured plan and stored selection context
 - replay does not re-plan when a persisted plan is available
+- replay is `best_effort_current_state`, not a historical snapshot re-simulation
+- replay re-applies the stored selection onto the current graph before execution
+- replay can therefore diverge from the original outcome if humans or agents changed the session after the original run
 - replay appends a new `commandRuns` entry rather than mutating the historical one
 - replay provenance is visible through `replayOfCommandRunId`
 

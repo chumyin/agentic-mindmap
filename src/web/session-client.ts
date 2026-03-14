@@ -32,11 +32,24 @@ type ApiErrorResponse = {
   error?: string
 }
 
+class MindmapApiError extends Error {
+  status: number
+
+  constructor(status: number, message: string) {
+    super(message)
+    this.name = 'MindmapApiError'
+    this.status = status
+  }
+}
+
 async function readJsonResponse<T>(response: Response): Promise<T> {
   const payload = (await response.json()) as T & ApiErrorResponse
 
   if (!response.ok) {
-    throw new Error(payload.error ?? `Mindmap API request failed (${response.status}).`)
+    throw new MindmapApiError(
+      response.status,
+      payload.error ?? `Mindmap API request failed (${response.status}).`,
+    )
   }
 
   return payload
@@ -73,7 +86,13 @@ async function requestWithFallback<T>(
   try {
     return await requestJson<T>(config.apiBase, path, options)
   } catch (error) {
-    if (!(error instanceof TypeError) || config.source !== 'storage') {
+    const shouldFallback =
+      config.source === 'storage' &&
+      (error instanceof TypeError ||
+        (error instanceof MindmapApiError &&
+          (error.status === 404 || error.status >= 500)))
+
+    if (!shouldFallback) {
       throw error
     }
 
