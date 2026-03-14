@@ -16,6 +16,15 @@ The graph is not a decorative output. It is the main working object. Every meani
 
 Conversation is useful, but it should not hide the map. The system should let users issue intent in natural language while keeping the resulting structure inspectable and editable.
 
+The product is not "agent-only". Human edits matter:
+
+- selecting a branch
+- renaming nodes
+- adding or deleting child nodes
+- correcting the structure before or after an agent action
+
+The map should support a mixed-control workflow, not an automation-only workflow.
+
 ### 3. Execution is part of the workflow
 
 The map should be able to produce downstream artifacts:
@@ -46,3 +55,18 @@ Vite + React + TypeScript is the fastest way to iterate on:
 - visual clarity of the canvas
 
 If the project later needs dedicated long-running services or agent workers, Go remains a strong candidate for that layer, but not for the first public repository baseline.
+
+## Current prototype stance
+
+The current prototype intentionally separates transport from protocol:
+
+- the browser proves the human editing and agent action workflow
+- the CLI proves agent-oriented control from external tools
+- both rely on the same graph concepts, edit types, and mock provider model
+
+Storage is still split by environment:
+
+- browser sessions are currently stored in `localStorage`
+- CLI sessions are stored on disk under `.agentic-mindmap/sessions/`
+
+Unifying those backends is future work, not hidden behavior.
