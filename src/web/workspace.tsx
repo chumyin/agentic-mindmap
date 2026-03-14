@@ -7,6 +7,7 @@ import { useSessionViewModel } from './session-view-model'
 
 export function Workspace() {
   const [prompt, setPrompt] = useState('')
+  const [commandInput, setCommandInput] = useState('')
   const [actionBrief, setActionBrief] = useState('Add risks and dependencies')
   const viewModel = useSessionViewModel()
 
@@ -22,19 +23,32 @@ export function Workspace() {
             </div>
           </div>
           <p className="workspace-topbar__note">
-            CLI-first prototype with a local browser workspace.
+            CLI-first prototype with a shared local session backend.
           </p>
         </header>
 
         <main className="workspace-grid">
           <PromptPanel
             prompt={prompt}
+            commandInput={commandInput}
+            commandPlan={viewModel.commandPlan}
+            commandRuns={viewModel.commandRuns}
+            commandError={viewModel.commandError}
+            commandPhase={viewModel.commandPhase}
             sessionId={viewModel.session.id}
             onPromptChange={setPrompt}
+            onCommandChange={setCommandInput}
             onGenerate={() => void viewModel.generateFromPrompt(prompt)}
+            onPreviewPlan={() => void viewModel.previewCommand(commandInput)}
+            onRunCommand={() => void viewModel.runCommand(commandInput)}
+            onApplyPlan={() => void viewModel.applyPlannedCommand()}
+            onReplayCommandRun={(commandRunId) =>
+              void viewModel.replayCommandRun(commandRunId)
+            }
             onReset={() => {
               viewModel.resetSession()
               setPrompt('')
+              setCommandInput('')
               setActionBrief('Add risks and dependencies')
             }}
           />

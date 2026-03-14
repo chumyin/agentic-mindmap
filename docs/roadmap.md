@@ -14,10 +14,12 @@
 - CLI session creation and machine-readable graph control
 - Deterministic mock provider for structured branch actions
 - Outline artifact generation from graph state
+- Shared local session backend between browser and CLI entrypoints
 
 ## Phase 3: Core graph actions
 
-- Shared session backend between browser and CLI
+- Standalone local daemon for the shared runtime API
+- Discovery routes and protocol self-description for external agent clients
 - Branch expand, summarize, merge, split, and regroup actions
 - Structured action history with richer review and replay support
 - Stronger graph validation and conflict handling

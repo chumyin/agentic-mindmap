@@ -58,15 +58,22 @@ If the project later needs dedicated long-running services or agent workers, Go 
 
 ## Current prototype stance
 
-The current prototype intentionally separates transport from protocol:
+The current prototype now shares one local session model across human and agent entrypoints:
 
-- the browser proves the human editing and agent action workflow
-- the CLI proves agent-oriented control from external tools
+- the browser talks to the same `/api/mindmap/*` surface through either Vite middleware or an explicit local daemon
+- the CLI talks to the same runtime model through machine-readable commands
+- the CLI can also host that runtime directly through `serve`
+- the runtime now exposes self-description and session discovery for external agent clients
+- natural-language commands are planned into explicit tool calls before execution
+- reviewed plans can be applied exactly, without forcing a second natural-language interpretation step
+- executed commands are persisted as inspectable session traces instead of disappearing into transient UI state
+- those command traces can now be discovered and replayed from CLI, HTTP, and recent browser history
+- both operate on the same file-backed sessions under `.agentic-mindmap/sessions/`
 - both rely on the same graph concepts, edit types, and mock provider model
 
-Storage is still split by environment:
+The extraction step now exists in local form. The next backend step is hardening:
 
-- browser sessions are currently stored in `localStorage`
-- CLI sessions are stored on disk under `.agentic-mindmap/sessions/`
-
-Unifying those backends is future work, not hidden behavior.
+- keep the standalone daemon lightweight and CLI-first
+- keep the protocol discoverable enough that tools such as Codex can attach without source-level coupling
+- decide when a stronger transport contract than plain local HTTP is actually necessary
+- keep the shared graph protocol stable while transport options expand

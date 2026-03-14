@@ -1,8 +1,18 @@
 /// <reference types="node" />
 
 import { fileURLToPath } from 'node:url'
+import type { MindmapSelection } from '../core/graph-types'
 import { createMindmapRuntime } from '../runtime/runtime'
-import type { MindmapArtifact } from '../core/graph-types'
+import type { GraphEdit, MindmapArtifact } from '../core/graph-types'
+import {
+  createMindmapHttpServer,
+  type MindmapHttpServerInfo,
+} from '../runtime/http-server'
+import { createMindmapProtocolDescription } from '../runtime/protocol'
+import type {
+  MindmapCommandMode,
+  MindmapCommandPlan,
+} from '../runtime/session-types'
 
 type ParsedArgs = {
   positionals: string[]
@@ -11,6 +21,8 @@ type ParsedArgs = {
 
 type ExecuteCliOptions = {
   stdin?: string
+  signal?: AbortSignal
+  onServeReady?: (info: MindmapHttpServerInfo) => void
 }
 
 export type ExecuteCliResult = {
@@ -74,6 +86,115 @@ function ensureString(value: unknown, fieldName: string): string {
   return value
 }
 
+function ensureGraphEdits(value: unknown): GraphEdit[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error('Expected "edits" to be a non-empty array.')
+  }
+
+  return value as GraphEdit[]
+}
+
+function ensureActorType(value: unknown): 'user' | 'agent' | 'system' {
+  if (value === 'user' || value === 'agent' || value === 'system') {
+    return value
+  }
+
+  throw new Error('Expected "actorType" to be one of user, agent, or system.')
+}
+
+function ensureCommandMode(value: unknown): MindmapCommandMode {
+  if (value === 'plan' || value === 'execute') {
+    return value
+  }
+
+  throw new Error('Expected "mode" to be either plan or execute.')
+}
+
+function ensureCommandPlan(value: unknown): MindmapCommandPlan {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    Array.isArray(value) ||
+    typeof (value as { input?: unknown }).input !== 'string' ||
+    typeof (value as { summary?: unknown }).summary !== 'string' ||
+    typeof (value as { target?: unknown }).target !== 'object' ||
+    !Array.isArray((value as { toolCalls?: unknown }).toolCalls)
+  ) {
+    throw new Error('Expected "plan" to match the command plan shape.')
+  }
+
+  return value as MindmapCommandPlan
+}
+
+function parseSelection(value: unknown): MindmapSelection | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined
+  }
+
+  const selection = value as Record<string, unknown>
+
+  return {
+    focusedNodeId:
+      typeof selection.focusedNodeId === 'string' || selection.focusedNodeId === null
+        ? (selection.focusedNodeId as string | null)
+        : null,
+    selectedNodeIds: Array.isArray(selection.selectedNodeIds)
+      ? selection.selectedNodeIds.filter(
+          (item): item is string => typeof item === 'string',
+        )
+      : [],
+  }
+}
+
+function parsePortFlag(value: string | undefined): number {
+  if (value === undefined) {
+    return 3210
+  }
+
+  const port = Number(value)
+
+  if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    throw new Error(`Expected "port" to be an integer between 0 and 65535.`)
+  }
+
+  return port
+}
+
+async function waitForAbort(signal: AbortSignal): Promise<void> {
+  if (signal.aborted) {
+    return
+  }
+
+  await new Promise<void>((resolve) => {
+    signal.addEventListener('abort', () => resolve(), { once: true })
+  })
+}
+
+async function runServeCommand(
+  flags: Record<string, string | boolean>,
+  rootDir: string | undefined,
+  options: ExecuteCliOptions,
+): Promise<void> {
+  if (!options.signal) {
+    throw new Error('The serve command requires an AbortSignal when run programmatically.')
+  }
+
+  const runtimeServer = createMindmapHttpServer({
+    rootDir,
+    host: getStringFlag(flags, 'host') ?? '127.0.0.1',
+    port: parsePortFlag(getStringFlag(flags, 'port')),
+  })
+  const serverInfo = await runtimeServer.start()
+
+  options.onServeReady?.(serverInfo)
+
+  try {
+    await waitForAbort(options.signal)
+  } finally {
+    await runtimeServer.stop()
+  }
+}
+
 function selectArtifact(
   artifacts: Record<string, MindmapArtifact>,
   kind: MindmapArtifact['kind'],
@@ -91,9 +212,16 @@ async function runCommand(
 ): Promise<unknown> {
   const parsed = parseArgs(argv)
   const rootDir = getStringFlag(parsed.flags, 'root-dir')
-  const runtime = createMindmapRuntime({ rootDir })
+  const resolvedRootDir = rootDir ?? process.cwd()
   const payload = parseJsonInput(options.stdin)
   const [command, subcommand] = parsed.positionals
+
+  if (command === 'serve') {
+    await runServeCommand(parsed.flags, rootDir, options)
+    return undefined
+  }
+
+  const runtime = createMindmapRuntime({ rootDir })
 
   if (command === 'session' && subcommand === 'create') {
     const session = await runtime.createSession()
@@ -104,6 +232,72 @@ async function runCommand(
     const sessionId = ensureString(getStringFlag(parsed.flags, 'session'), 'session')
     const session = await runtime.loadSession(sessionId)
     return { session }
+  }
+
+  if (command === 'session' && subcommand === 'list') {
+    const sessions = await runtime.listSessions()
+    return { sessions }
+  }
+
+  if (command === 'describe') {
+    return createMindmapProtocolDescription({
+      rootDir: resolvedRootDir,
+    })
+  }
+
+  if (command === 'command') {
+    const sessionId = ensureString(getStringFlag(parsed.flags, 'session'), 'session')
+
+    if (subcommand === 'list') {
+      const commandRuns = await runtime.listCommandRuns(sessionId)
+      return { commandRuns }
+    }
+
+    if (subcommand === 'show') {
+      const commandRun = await runtime.loadCommandRun(
+        sessionId,
+        ensureString(getStringFlag(parsed.flags, 'run'), 'run'),
+      )
+      return { commandRun }
+    }
+
+    if (subcommand === 'replay') {
+      return runtime.replayCommandRun(
+        sessionId,
+        ensureString(getStringFlag(parsed.flags, 'run'), 'run'),
+        typeof payload.actorId === 'string' ? payload.actorId : undefined,
+      )
+    }
+
+    if (subcommand === 'apply') {
+      return runtime.applyCommandPlan({
+        sessionId,
+        plan: ensureCommandPlan(payload.plan),
+        actorId: typeof payload.actorId === 'string' ? payload.actorId : undefined,
+        selection: parseSelection(payload.selection),
+      })
+    }
+
+    const mode =
+      typeof payload.mode === 'string' ? ensureCommandMode(payload.mode) : 'execute'
+
+    if (mode === 'plan') {
+      const plan = await runtime.planCommand({
+        sessionId,
+        input: ensureString(payload.input, 'input'),
+        actorId: typeof payload.actorId === 'string' ? payload.actorId : undefined,
+        selection: parseSelection(payload.selection),
+      })
+
+      return { plan }
+    }
+
+    return runtime.executeCommand({
+      sessionId,
+      input: ensureString(payload.input, 'input'),
+      actorId: typeof payload.actorId === 'string' ? payload.actorId : undefined,
+      selection: parseSelection(payload.selection),
+    })
   }
 
   if (command === 'generate') {
@@ -131,6 +325,21 @@ async function runCommand(
       instruction:
         typeof payload.instruction === 'string' ? payload.instruction : undefined,
       actorId: typeof payload.actorId === 'string' ? payload.actorId : undefined,
+    })
+    return { session }
+  }
+
+  if (command === 'edit') {
+    const sessionId = ensureString(getStringFlag(parsed.flags, 'session'), 'session')
+    const session = await runtime.applyManualEdits({
+      sessionId,
+      edits: ensureGraphEdits(payload.edits),
+      actorId: typeof payload.actorId === 'string' ? payload.actorId : undefined,
+      actorType:
+        typeof payload.actorType === 'string'
+          ? ensureActorType(payload.actorType)
+          : undefined,
+      summary: typeof payload.summary === 'string' ? payload.summary : undefined,
     })
     return { session }
   }
@@ -178,7 +387,7 @@ export async function executeCli(
 
     return {
       exitCode: 0,
-      stdout: renderJson(result),
+      stdout: result === undefined ? '' : renderJson(result),
       stderr: '',
     }
   } catch (error) {
@@ -207,7 +416,36 @@ async function readProcessStdin(): Promise<string> {
 }
 
 async function main() {
-  const result = await executeCli(process.argv.slice(2), {
+  const argv = process.argv.slice(2)
+
+  if (argv[0] === 'serve') {
+    const abortController = new AbortController()
+    const abort = () => abortController.abort()
+
+    process.once('SIGINT', abort)
+    process.once('SIGTERM', abort)
+
+    const result = await executeCli(argv, {
+      signal: abortController.signal,
+      onServeReady(info) {
+        process.stdout.write(
+          renderJson({
+            status: 'listening',
+            server: info,
+          }),
+        )
+      },
+    })
+
+    if (result.stderr) {
+      process.stderr.write(result.stderr)
+    }
+
+    process.exitCode = result.exitCode
+    return
+  }
+
+  const result = await executeCli(argv, {
     stdin: await readProcessStdin(),
   })
 
