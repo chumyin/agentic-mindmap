@@ -283,6 +283,112 @@ describe('mindmap runtime', () => {
     })
   })
 
+  it('sanitizes invalid apply selections against the current graph', async () => {
+    const runtime = createMindmapRuntime({ rootDir })
+    const session = await runtime.createSession()
+    const generated = await runtime.generateMap({
+      sessionId: session.id,
+      prompt: 'Launch strategy for a new B2B analytics product',
+      actorId: 'test-agent',
+    })
+    const targetNodeId = generated.graph.nodes[generated.graph.rootNodeId].children[0]
+
+    const plan = await runtime.planCommand({
+      sessionId: generated.id,
+      input: 'Rename this node to Priority goals',
+      actorId: 'test-agent',
+      selection: {
+        focusedNodeId: targetNodeId,
+        selectedNodeIds: [targetNodeId],
+      },
+    })
+
+    const applied = await runtime.applyCommandPlan({
+      sessionId: generated.id,
+      plan,
+      actorId: 'plan-agent',
+      selection: {
+        focusedNodeId: 'ghost',
+        selectedNodeIds: ['ghost'],
+      },
+    })
+
+    expect(applied.session.graph.nodes[targetNodeId]?.title).toBe('Priority goals')
+    expect(applied.session.graph.selection).toEqual({
+      focusedNodeId: targetNodeId,
+      selectedNodeIds: [targetNodeId],
+    })
+    expect(applied.session.commandRuns.at(-1)).toMatchObject({
+      selection: {
+        focusedNodeId: targetNodeId,
+        selectedNodeIds: [targetNodeId],
+      },
+    })
+  })
+
+  it('falls back to the current graph selection when a plan target node is invalid', async () => {
+    const runtime = createMindmapRuntime({ rootDir })
+    const session = await runtime.createSession()
+    const generated = await runtime.generateMap({
+      sessionId: session.id,
+      prompt: 'Launch strategy for a new B2B analytics product',
+      actorId: 'test-agent',
+    })
+    const [targetNodeId, otherNodeId] =
+      generated.graph.nodes[generated.graph.rootNodeId].children
+
+    await runtime.applyManualEdits({
+      sessionId: generated.id,
+      edits: [
+        {
+          type: 'set_selection',
+          selection: {
+            focusedNodeId: otherNodeId,
+            selectedNodeIds: [otherNodeId],
+          },
+        },
+      ],
+      actorId: 'browser-user',
+      summary: 'Selected Audience branch before applying a tampered plan.',
+    })
+
+    const applied = await runtime.applyCommandPlan({
+      sessionId: generated.id,
+      actorId: 'plan-agent',
+      plan: {
+        input: 'Rename Goals to Priority goals',
+        summary: 'Rename Goals to Priority goals.',
+        target: {
+          sessionId: generated.id,
+          nodeId: 'ghost',
+          nodeTitle: 'Ghost node',
+        },
+        toolCalls: [
+          {
+            id: 'call_rename_node_1',
+            toolName: 'rename_node',
+            arguments: {
+              nodeId: targetNodeId,
+              title: 'Priority goals',
+            },
+          },
+        ],
+      },
+    })
+
+    expect(applied.session.graph.nodes[targetNodeId]?.title).toBe('Priority goals')
+    expect(applied.session.graph.selection).toEqual({
+      focusedNodeId: otherNodeId,
+      selectedNodeIds: [otherNodeId],
+    })
+    expect(applied.session.commandRuns.at(-1)).toMatchObject({
+      selection: {
+        focusedNodeId: otherNodeId,
+        selectedNodeIds: [otherNodeId],
+      },
+    })
+  })
+
   it('rejects applying a plan to a different session', async () => {
     const runtime = createMindmapRuntime({ rootDir })
     const sourceSession = await runtime.createSession()

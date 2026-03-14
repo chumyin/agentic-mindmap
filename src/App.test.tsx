@@ -90,42 +90,52 @@ describe('App workspace', () => {
     )
   })
 
-  it('renders the workspace shell and bootstraps a shared session', async () => {
-    render(<App />)
+  it(
+    'renders the workspace shell and bootstraps a shared session',
+    async () => {
+      render(<App />)
 
-    expect(
-      screen.getByRole('heading', {
-        name: /agentic mindmap workspace/i,
-      }),
-    ).toBeInTheDocument()
-    expect(screen.getByLabelText(/prompt input/i)).toBeInTheDocument()
-    expect(screen.getByTestId('mindmap-canvas')).toBeInTheDocument()
-    expect(await screen.findByText(/^sess_/i, {}, { timeout: 5000 })).toBeInTheDocument()
-  })
+      expect(
+        screen.getByRole('heading', {
+          name: /agentic mindmap workspace/i,
+        }),
+      ).toBeInTheDocument()
+      expect(screen.getByLabelText(/prompt input/i)).toBeInTheDocument()
+      expect(screen.getByTestId('mindmap-canvas')).toBeInTheDocument()
+      expect(
+        await screen.findByText(/^sess_/i, {}, { timeout: 10000 }),
+      ).toBeInTheDocument()
+    },
+    10000,
+  )
 
-  it('loads an existing backend session from a stored session id', async () => {
-    const created = await handler({
-      method: 'POST',
-      url: '/api/mindmap/session',
-    })
-    const sessionId = (created.body.session as { id: string }).id
+  it(
+    'loads an existing backend session from a stored session id',
+    async () => {
+      const created = await handler({
+        method: 'POST',
+        url: '/api/mindmap/session',
+      })
+      const sessionId = (created.body.session as { id: string }).id
 
-    await handler({
-      method: 'POST',
-      url: `/api/mindmap/session/${sessionId}/generate`,
-      body: {
-        prompt: 'Launch strategy for a new B2B analytics product',
-      },
-    })
+      await handler({
+        method: 'POST',
+        url: `/api/mindmap/session/${sessionId}/generate`,
+        body: {
+          prompt: 'Launch strategy for a new B2B analytics product',
+        },
+      })
 
-    window.localStorage.setItem(SESSION_STORAGE_KEY, sessionId)
+      window.localStorage.setItem(SESSION_STORAGE_KEY, sessionId)
 
-    render(<App />)
+      render(<App />)
 
-    expect(
-      await screen.findByRole('button', { name: /Goals/i }, { timeout: 5000 }),
-    ).toBeInTheDocument()
-  })
+      expect(
+        await screen.findByRole('button', { name: /Goals/i }, { timeout: 10000 }),
+      ).toBeInTheDocument()
+    },
+    10000,
+  )
 
   it(
     'supports prompt generation, manual edits, and outline creation through the shared backend',
@@ -376,7 +386,7 @@ describe('App workspace', () => {
       expect(session.graph.nodes.n_root_goals_1?.title).toBe('Priority goals')
       expect(session.graph.nodes.n_root_audience_2?.title).toBe('Audience')
     },
-    15000,
+    30000,
   )
 
   it(

@@ -80,6 +80,9 @@ async function requestWithFallback<T>(
     method?: string
     body?: Record<string, unknown>
   } = {},
+  fallbackOptions: {
+    allowRouteNotFoundFallback?: boolean
+  } = {},
 ): Promise<T> {
   const config = resolveMindmapApiConfig()
 
@@ -89,8 +92,10 @@ async function requestWithFallback<T>(
     const shouldFallback =
       config.source === 'storage' &&
       (error instanceof TypeError ||
-        (error instanceof MindmapApiError &&
-          (error.status === 404 || error.status >= 500)))
+        error instanceof SyntaxError ||
+        (fallbackOptions.allowRouteNotFoundFallback &&
+          error instanceof MindmapApiError &&
+          error.status === 404))
 
     if (!shouldFallback) {
       throw error
@@ -102,9 +107,15 @@ async function requestWithFallback<T>(
 }
 
 export async function createRemoteSession(): Promise<MindmapSession> {
-  const response = await requestWithFallback<SessionResponse>('/session', {
-    method: 'POST',
-  })
+  const response = await requestWithFallback<SessionResponse>(
+    '/session',
+    {
+      method: 'POST',
+    },
+    {
+      allowRouteNotFoundFallback: true,
+    },
+  )
 
   return response.session
 }
