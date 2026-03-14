@@ -59,19 +59,28 @@ That makes a front-end-first stack the right choice for the first public iterati
 
 ## Repository status
 
-This repo is in the `prototype shell` stage.
+This repo is now in the `functional prototype` stage.
 
 What exists now:
 
-- a public-facing landing application
-- the initial product narrative
-- design and bootstrap planning docs
-- a testing baseline with `Vitest`
+- a browser workspace for prompt-to-map generation
+- direct node selection and manual branch editing
+- structured branch actions backed by a deterministic mock provider
+- outline artifact generation
+- a CLI surface for session creation, graph generation, actions, and export
+- a shared graph core with immutable edits and operation history
+
+Current constraints:
+
+- the browser uses local `localStorage` for its prototype session backend
+- the CLI uses file-backed sessions under `.agentic-mindmap/sessions/`
+- the provider is mocked and deterministic, not a real LLM integration
+- layout and transforms are intentionally narrow and heuristic
 
 What does not exist yet:
 
 - real AI provider integration
-- persistent map storage
+- shared browser and CLI runtime backend
 - multi-user collaboration
 - production-grade export and execution workflows
 
@@ -84,11 +93,33 @@ npm run dev
 
 Open the app at the local Vite URL.
 
+### CLI prototype
+
+Run the CLI through the package script:
+
+```bash
+npm run cli -- session create
+```
+
+Generate a map for an existing session:
+
+```bash
+echo '{"prompt":"Launch strategy for a new B2B analytics product"}' | \
+  npm run cli -- generate --session <session-id>
+```
+
+Export an outline:
+
+```bash
+npm run cli -- export --session <session-id> --format outline
+```
+
 ## Verification
 
 Run the current checks:
 
 ```bash
+npm run cli -- session create
 npm run lint
 npm run test
 npm run build
@@ -102,14 +133,19 @@ See:
 
 - [`docs/vision.md`](docs/vision.md)
 - [`docs/roadmap.md`](docs/roadmap.md)
-- [`docs/plans/2026-03-13-agentic-mindmap-design.md`](docs/plans/2026-03-13-agentic-mindmap-design.md)
+- [`docs/plans/2026-03-14-agentic-mindmap-prototype-design.md`](docs/plans/2026-03-14-agentic-mindmap-prototype-design.md)
+- [`docs/plans/2026-03-14-agentic-mindmap-prototype-implementation-plan.md`](docs/plans/2026-03-14-agentic-mindmap-prototype-implementation-plan.md)
 
 ## Project structure
 
 ```text
 src/
-  App.tsx            Product landing and graph preview
-  App.test.tsx       Baseline rendering test
+  core/              Canonical graph schema and edits
+  runtime/           File-backed runtime and mock provider
+  cli/               Machine-readable command interface
+  web/               Browser workspace components and view-model
+  App.tsx            Workspace entry point
+  App.test.tsx       Workspace interaction test
   test/setup.ts      Vitest setup
 docs/
   vision.md          Product narrative and principles
@@ -121,6 +157,7 @@ docs/
 
 - Mindmaps are live structures, not frozen output.
 - AI actions should operate on graph context, not only on raw text.
+- Human edits and agent edits should share the same graph protocol.
 - A good graph tool should help users move from thinking to execution.
 
 ## Contributing
